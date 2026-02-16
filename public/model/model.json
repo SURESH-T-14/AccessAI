@@ -1,0 +1,12 @@
+{
+  "format": "graph-model",
+  "generatedBy": "AccessAI-LSTM-Converter",
+  "convertedBy": "TensorFlow.js",
+  "modelTopology": {
+    "class_name": "Sequential",
+    "config": {
+      "name": "sequential_1",
+      "layers": []
+    }
+  }
+}

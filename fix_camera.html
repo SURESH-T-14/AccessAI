@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Camera Diagnostic & Fix</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+        }
+        .section {
+            margin: 20px 0;
+            padding: 15px;
+            border-left: 4px solid #007bff;
+            background: #f9f9f9;
+        }
+        button {
+            background: #007bff;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 10px 5px 10px 0;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        .success {
+            color: #28a745;
+            font-weight: bold;
+        }
+        .error {
+            color: #dc3545;
+            font-weight: bold;
+        }
+        .warning {
+            color: #ffc107;
+            font-weight: bold;
+        }
+        #video {
+            width: 100%;
+            max-width: 640px;
+            margin: 10px 0;
+            border: 2px solid #ddd;
+            border-radius: 5px;
+        }
+        #output {
+            background: #f0f0f0;
+            padding: 10px;
+            border-radius: 5px;
+            margin: 10px 0;
+            min-height: 30px;
+            font-family: monospace;
+        }
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 5px;
+            text-align: center;
+            font-weight: bold;
+        }
+        .status.working {
+            background: #d4edda;
+            color: #155724;
+        }
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        .status.success {
+            background: #d4edda;
+            color: #155724;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎥 Camera Diagnostic & Fix</h1>
+        
+        <div class="section">
+            <h2>Step 1: Check Camera Hardware</h2>
+            <button onclick="checkCameraDevices()">Check Available Cameras</button>
+            <div id="output"></div>
+        </div>
+
+        <div class="section">
+            <h2>Step 2: Test Camera Access</h2>
+            <button onclick="testCameraAccess()">Request Camera Permission</button>
+            <button onclick="stopCamera()">Stop Camera</button>
+            <video id="video" autoplay playsinline></video>
+            <div id="status" class="status"></div>
+        </div>
+
+        <div class="section">
+            <h2>Step 3: Troubleshooting</h2>
+            <ul>
+                <li><strong>Camera not found:</strong> Check if USB camera is plugged in</li>
+                <li><strong>Permission denied:</strong> Check browser camera permissions in settings</li>
+                <li><strong>Device in use:</strong> Close other apps using the camera (Zoom, Teams, etc.)</li>
+                <li><strong>Windows Settings:</strong> Go to Settings > Privacy & Security > Camera and enable camera access</li>
+            </ul>
+            <button onclick="openCameraSettings()">Open Windows Camera Settings</button>
+        </div>
+
+        <div class="section">
+            <h2>Step 4: Browser Settings</h2>
+            <p><strong>Chrome/Edge:</strong> Click lock icon → Camera → Allow</p>
+            <p><strong>Firefox:</strong> Click lock icon → Permissions → Allow Camera</p>
+            <button onclick="reloadPage()">Reload Page</button>
+        </div>
+    </div>
+
+    <script>
+        const output = document.getElementById('output');
+        const status = document.getElementById('status');
+        let stream = null;
+
+        async function checkCameraDevices() {
+            try {
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                const videoDevices = devices.filter(d => d.kind === 'videoinput');
+                
+                output.innerHTML = '';
+                if (videoDevices.length === 0) {
+                    output.innerHTML = '<span class="error">❌ No camera devices found! Check hardware.</span>';
+                    return;
+                }
+                
+                output.innerHTML = '<span class="success">✅ Found cameras:</span><br>';
+                videoDevices.forEach((device, i) => {
+                    output.innerHTML += `${i+1}. ${device.label || 'Camera ' + (i+1)}<br>`;
+                });
+            } catch (error) {
+                output.innerHTML = `<span class="error">❌ Error: ${error.message}</span>`;
+            }
+        }
+
+        async function testCameraAccess() {
+            try {
+                status.className = 'status working';
+                status.textContent = '⏳ Requesting camera access...';
+                
+                stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { 
+                        width: { ideal: 640 },
+                        height: { ideal: 480 }
+                    }
+                });
+                
+                const video = document.getElementById('video');
+                video.srcObject = stream;
+                
+                status.className = 'status success';
+                status.textContent = '✅ Camera is working! You can use it in the app.';
+            } catch (error) {
+                status.className = 'status error';
+                status.textContent = `❌ Camera Error: ${error.name} - ${error.message}`;
+                console.error('Camera error:', error);
+            }
+        }
+
+        function stopCamera() {
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+                document.getElementById('video').srcObject = null;
+                status.className = 'status';
+                status.textContent = '⏹️ Camera stopped';
+            }
+        }
+
+        function openCameraSettings() {
+            // Open Windows Settings for Camera
+            if (navigator.platform.includes('Win')) {
+                alert('Opening Windows Settings...\n\nNavigate to: Settings > Privacy & Security > Camera');
+                // Can't directly open Settings, but we can guide the user
+            }
+        }
+
+        function reloadPage() {
+            location.reload();
+        }
+
+        // Auto-check on load
+        window.addEventListener('load', () => {
+            checkCameraDevices();
+        });
+    </script>
+</body>
+</html>
