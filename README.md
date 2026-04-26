@@ -48,7 +48,16 @@ To bridge the accessibility gap by providing an intelligent, multi-modal interfa
 - Support for common phrases and custom text
 - Bidirectional translation support
 
-### 🆘 **Emergency SOS System**
+### � **AI Image Generation**
+- **Z-Image Model**: Efficient text-to-image generation with Tongyi-MAI/Z-Image
+- **Stable Diffusion XL**: High-quality image synthesis via HuggingFace API
+- Multiple model support with fallback mechanisms
+- Customizable parameters (size, steps, guidance scale)
+- Multilingual prompt support (English, Chinese, etc.)
+- Local generation (Python) or cloud-based (JavaScript)
+- Real-time generation progress tracking
+
+### �🆘 **Emergency SOS System**
 - One-click emergency alert system
 - SMS notifications via Twilio
 - Email alerts via Nodemailer
@@ -110,15 +119,17 @@ OpenCV               - Computer vision library
 MediaPipe            - Hand landmark detection
 PyMongo              - MongoDB Python driver
 scikit-learn         - ML model training
+Diffusers            - Image generation pipelines
+PyTorch              - Deep learning framework (for Z-Image)
 ```
 
 ### **AI & ML Services**
 ```
 Google Gemini API     - Conversational AI (@google/genai)
+HuggingFace Inference - Text-to-image generation (Stable Diffusion XL)
+Z-Image (Tongyi-MAI)  - Efficient image generation with diffusion transformer
 TensorFlow.js         - Browser-based machine learning
 MediaPipe Hands       - Hand pose detection model
-OpenAI API            - Advanced NLP and translation
-Unsplash API          - Image search and generation
 ```
 
 ### **Databases**
@@ -228,7 +239,38 @@ pip install flask tensorflow opencv-python mediapipe pymongo python-dotenv flask
 # The models will be trained on first run or you can use pre-trained models
 ```
 
-### 5. Firebase Configuration
+### 5. Z-Image Setup (Optional - Advanced Local Generation)
+
+**Z-Image is already integrated!** The gesture API server includes Z-Image endpoints that use HuggingFace's cloud API.
+
+**For cloud-based generation (recommended):**
+- Just add your HuggingFace API key to `.env`
+- Type `generate z-image of [prompt]` in chat
+- Done! ✅
+
+**For advanced local generation (optional):**
+```bash
+# Quick setup using provided scripts
+# Windows:
+setup_zimage.bat
+
+# Linux/Mac:
+python setup_zimage.py
+
+# Or manual installation:
+pip install git+https://github.com/huggingface/diffusers
+pip install -U huggingface_hub torch torchvision
+
+# Download Z-Image model (~6GB)
+huggingface-cli download Tongyi-MAI/Z-Image
+
+# Test the setup
+python zimage_generator.py
+```
+
+**Note:** Local generation requires CUDA-capable GPU (8GB+ VRAM). Cloud-based generation via HuggingFace API works without GPU. See [ZIMAGE_QUICKSTART.md](ZIMAGE_QUICKSTART.md) for details.
+
+### 6. Firebase Configuration
 ```bash
 # 1. Create a Firebase project at https://firebase.google.com/
 # 2. Enable Authentication (Email, Phone, Google)
@@ -268,7 +310,7 @@ npm run server
 # Activate Python environment first
 .venv\Scripts\activate
 
-# Start Gesture Recognition API
+# Start Gesture Recognition API (includes Z-Image endpoint!)
 python gesture_api_server_simple.py
 
 # Start Translation API
@@ -277,6 +319,8 @@ python translate_api.py
 # Start Firebase-MongoDB Sync
 python sync_firebase_to_mongodb.py
 ```
+
+**Note:** Z-Image generation is built into the gesture API server - no separate server needed!
 
 ### Using the Application
 
@@ -334,6 +378,8 @@ AccessAI/
 │   │   ├── NLPService.js        # Natural language processing
 │   │   ├── TranslationService.js # Translation logic
 │   │   ├── RealTimeDataService.js # Firebase sync
+│   │   ├── HuggingFaceService.js # Stable Diffusion XL image generation
+│   │   ├── ZImageService.js     # Z-Image generation service
 │   │   └── EmergencyContactService.js # SOS handling
 │   ├── hooks/                    # Custom React hooks
 │   ├── utils/                    # Utility functions
@@ -344,6 +390,8 @@ AccessAI/
 ├── gesture_api_server_simple.py  # Gesture recognition API
 ├── translate_api.py              # Translation API
 ├── image_generator.py            # Image generation service
+├── zimage_generator.py           # Z-Image generator class
+├── zimage_api_server.py          # Z-Image API server (Flask)
 ├── nlp_processor.py              # NLP processing service
 ├── sync_firebase_to_mongodb.py   # Data sync service
 ├── mongodb_connection.py         # MongoDB utilities
@@ -378,6 +426,7 @@ VITE_FIREBASE_APP_ID=your_app_id
 
 # AI Services
 VITE_GEMINI_API_KEY=your_gemini_api_key
+VITE_HUGGINGFACE_API_KEY=your_huggingface_token
 OPENAI_API_KEY=your_openai_api_key
 UNSPLASH_ACCESS_KEY=your_unsplash_key
 
@@ -433,6 +482,8 @@ Comprehensive documentation is available in the repository:
 - [System Architecture](SYSTEM_ARCHITECTURE.md) - Complete system design
 - [Firebase Setup Guide](FIREBASE_SETUP.md) - Firebase configuration
 - [Gesture Training Guide](GESTURE_TRAINING_GUIDE.md) - ML model training
+- [Z-Image Quick Start](ZIMAGE_QUICKSTART.md) - AI image generation with Z-Image
+- [Z-Image Setup Guide](ZIMAGE_SETUP.md) - Detailed Z-Image installation
 - [SOS Quick Start](SOS_QUICK_START.md) - Emergency system setup
 - [Translator Integration](TRANSLATOR_INTEGRATION.md) - Translation setup
 - [Real-Time Data Guide](REAL_TIME_DATA_GUIDE.md) - Data sync configuration

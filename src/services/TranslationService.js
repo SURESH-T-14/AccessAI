@@ -529,7 +529,8 @@ export class TranslationService {
    */
   static async translateAuto(text, targetLanguage, sourceLanguage = null, preferredProvider = null) {
     // Use 'argos' (local) as default provider first, since it's most reliable
-    const providers = ['argos', 'google', 'gemini', 'openai'];
+    // NOTE: OpenAI removed due to quota limitations - use Gemini instead
+    const providers = ['argos', 'google', 'gemini'];
     
     // Reorder providers based on preference
     if (preferredProvider && providers.includes(preferredProvider)) {
@@ -569,6 +570,9 @@ export class TranslationService {
             }
             break;
 
+          // OpenAI case removed due to API quota limitations
+          // If you have OpenAI credits, uncomment below and add 'openai' to providers array
+          /*
           case 'openai':
             result = await this.translateWithOpenAI(text, targetLanguage, sourceLanguage);
             if (!result.error) {
@@ -576,6 +580,7 @@ export class TranslationService {
               return result;
             }
             break;
+          */
         }
       } catch (error) {
         console.warn(`⚠ ${provider} translation failed:`, error.message);

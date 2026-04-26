@@ -4,7 +4,7 @@
 Flask Server for Hand Gesture + Chatbot Integration with AccessAI
 Enhanced with NLP processing, sentiment analysis, and intent detection
 """
-from flask import Flask, jsonify, request, send_file
+from flask import Flask, jsonify, request
 from flask_cors import CORS
 import cv2
 import numpy as np
@@ -23,48 +23,6 @@ import time
 from pathlib import Path
 import sys
 import os
-import json
-import requests
-
-# Load environment variables from .env
-try:
-    from dotenv import load_dotenv
-    env_path = Path(__file__).parent / '.env'
-    if env_path.exists():
-        load_dotenv(env_path)
-        print(f"[✓] Loaded environment variables from {env_path}")
-    else:
-        load_dotenv()  # Try to load from default locations
-        print("[✓] Loaded environment variables from default location")
-except ImportError:
-    print("[!] python-dotenv not installed, skipping .env loading")
-
-# Try importing gTTS for Tamil TTS support
-try:
-    from gtts import gTTS
-    GTTS_AVAILABLE = True
-    print("[✓] gTTS (Google Text-to-Speech) imported successfully")
-except ImportError as e:
-    GTTS_AVAILABLE = False
-    print(f"[!] gTTS not available: {e}")
-
-# Try importing image generator
-try:
-    from image_generator import ImageGenerator
-    IMAGE_GENERATOR_AVAILABLE = True
-    print("[✓] Image Generator imported successfully")
-except ImportError as e:
-    IMAGE_GENERATOR_AVAILABLE = False
-    print(f"[!] Image Generator not available: {e}")
-
-# Try importing MongoDB module
-try:
-    from mongodb_connection import connect_mongodb, get_db, close_connection
-    MONGODB_AVAILABLE = True
-    print("[✓] MongoDB module imported successfully")
-except ImportError as e:
-    MONGODB_AVAILABLE = False
-    print(f"[!] MongoDB module not available: {e}")
 
 # Set UTF-8 encoding
 if sys.stdout.encoding != 'utf-8':
@@ -105,10 +63,19 @@ if NLP_AVAILABLE:
 translator = None
 if ARGOS_AVAILABLE:
     try:
-        # Skip Argos initialization to prevent hanging
-        # It's not critical for core functionality
-        print("[*] Argos Translator available but not initialized (skipped to prevent blocking)")
-        translator = None
+        from argos_translator import init_translator
+        # Start initialization in background thread to avoid blocking Flask startup
+        def init_argos():
+            try:
+                init_translator()
+                print("[✓] Argos Translate initialized successfully")
+            except Exception as e:
+                print(f"[!] Argos Translate initialization failed: {e}")
+        
+        init_thread = threading.Thread(target=init_argos, daemon=True)
+        init_thread.start()
+        translator = get_translator()  # Get reference (will be initialized in background)
+        print("[✓] Argos Translator background initialization started")
     except Exception as e:
         print(f"[!] Argos Translator import error: {e}")
         translator = None
@@ -171,25 +138,33 @@ print("[*] Loading AI models...")
 gesture_model = None
 GESTURE_LABELS = []
 
-# Try to load improved gesture classifier first (1-9, A-Z)
+# Try to load improved gesture classifier first (1-6, A-Z comprehensive)
 try:
-    if os.path.exists("gesture_classifier.pkl"):
-        with open("gesture_classifier.pkl", "rb") as f:
+    # First try comprehensive model (all 32 classes)
+    comprehensive_model_exists = os.path.exists("gesture_classifier_comprehensive.pkl")
+    model_file = "gesture_classifier_comprehensive.pkl" if comprehensive_model_exists else "gesture_classifier.pkl"
+    
+    if os.path.exists(model_file):
+        with open(model_file, "rb") as f:
             gesture_model = pickle.load(f)
-        print("[OK] Improved Gesture Classifier (1-9, A-Z) loaded successfully")
+        model_type = "Comprehensive (32 classes: 1-6, A-Z)" if comprehensive_model_exists else "Improved"
+        print(f"[OK] {model_type} Gesture Classifier loaded successfully")
+        
         # Load class mapping if available
         try:
-            with open("gesture_class_map.pkl", "rb") as f:
+            class_map_file = "gesture_class_map_comprehensive.pkl" if comprehensive_model_exists else "gesture_class_map.pkl"
+            with open(class_map_file, "rb") as f:
                 class_map = pickle.load(f)
                 # Convert dict {0: '1', 1: '2', ...} to list ['1', '2', ...]
                 if isinstance(class_map, dict):
                     GESTURE_LABELS = [class_map[i] for i in sorted(class_map.keys())]
                 else:
                     GESTURE_LABELS = class_map
-            print(f"[OK] Class mapping loaded: {GESTURE_LABELS}")
+            print(f"[OK] Class mapping loaded: {len(GESTURE_LABELS)} classes")
+            print(f"[OK] Classes: {', '.join(GESTURE_LABELS)}")
         except Exception as map_err:
             print(f"[!] Class mapping failed: {map_err}")
-            GESTURE_LABELS = list("123456789") + list("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+            GESTURE_LABELS = list("123456") + list("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
     else:
         raise FileNotFoundError("gesture_classifier.pkl not found")
 except Exception as e:
@@ -1108,843 +1083,256 @@ def analyze_text():
             'message': f'Error analyzing text: {str(e)}'
         }), 500
 
-@app.route('/api/tts', methods=['POST'])
-def text_to_speech():
-    """Generate speech from text using gTTS (supports Tamil, Telugu, Hindi, etc.)"""
-    try:
-        data = request.get_json()
-        text = data.get('text', '').strip()
-        language = data.get('language', 'en').lower()
-        
-        if not text:
-            return jsonify({
-                'error': True,
-                'message': 'No text provided'
-            }), 400
-        
-        # Map language codes to gTTS language codes
-        language_map = {
-            'ta': 'ta',        # Tamil
-            'te': 'te',        # Telugu
-            'kn': 'kn',        # Kannada
-            'ml': 'ml',        # Malayalam
-            'mr': 'mr',        # Marathi
-            'hi': 'hi',        # Hindi
-            'bn': 'bn',        # Bengali
-            'gu': 'gu',        # Gujarati
-            'pa': 'pa',        # Punjabi
-            'en': 'en',        # English
-            'tamil': 'ta',
-            'telugu': 'te',
-            'kannada': 'kn',
-            'malayalam': 'ml',
-            'marathi': 'mr',
-            'hindi': 'hi',
-            'bengali': 'bn',
-            'gujarati': 'gu',
-            'punjabi': 'pa',
-        }
-        
-        gtts_lang = language_map.get(language, 'en')
-        
-        if not GTTS_AVAILABLE:
-            return jsonify({
-                'error': True,
-                'message': 'Text-to-Speech service not available. Install gtts: pip install gtts',
-                'fallback': True
-            }), 200
-        
-        print(f"[TTS] Generating {gtts_lang} speech for text: {text[:50]}...")
-        
-        try:
-            # Generate speech using gTTS
-            tts = gTTS(text=text, lang=gtts_lang, slow=False)
-            
-            # Save to BytesIO buffer
-            audio_buffer = io.BytesIO()
-            tts.write_to_fp(audio_buffer)
-            audio_buffer.seek(0)
-            
-            print(f"[TTS] Speech generated successfully ({len(audio_buffer.getvalue())} bytes)")
-            
-            return send_file(
-                audio_buffer,
-                mimetype='audio/mpeg',
-                as_attachment=False,
-                download_name=f'speech_{language}.mp3'
-            ), 200
-        
-        except Exception as e:
-            print(f"[!] gTTS error: {e}")
-            import traceback
-            print(traceback.format_exc())
-            return jsonify({
-                'error': True,
-                'message': f'TTS failed: {str(e)}',
-                'fallback': True
-            }), 200
-    
-    except Exception as e:
-        print(f"[!] TTS error: {e}")
-        import traceback
-        print(traceback.format_exc())
-        return jsonify({
-            'error': True,
-            'message': f'Error generating speech: {str(e)}'
-        }), 500
-
-# ==================== MONGODB ENDPOINTS ====================
-
-@app.route('/api/mongodb-status', methods=['GET'])
-def mongodb_status():
-    """Check MongoDB connection status"""
-    try:
-        if MONGODB_AVAILABLE:
-            db = get_db()
-            if db:
-                return jsonify({
-                    'connected': True,
-                    'message': 'MongoDB connected',
-                    'database': os.getenv('MONGODB_DB_NAME', 'accessai_db')
-                }), 200
-        return jsonify({
-            'connected': False,
-            'message': 'MongoDB not available'
-        }), 503
-    except Exception as e:
-        return jsonify({'connected': False, 'error': str(e)}), 500
-
-# ==================== EMAIL ENDPOINTS ====================
-
-@app.route('/api/send-emergency-email', methods=['POST'])
-def send_emergency_email():
-    """Send emergency email alert"""
-    try:
-        data = request.get_json()
-        email = data.get('email')
-        subject = data.get('subject', 'Emergency Alert')
-        message = data.get('message')
-        user_id = data.get('userId')
-        contact_name = data.get('contactName', 'Unknown')
-        
-        print(f"\n[Email] Attempting to send to {contact_name} ({email})")
-        
-        if not email or not message:
-            print(f"[!] Missing data: email={email}, message={bool(message)}")
-            return jsonify({'error': 'Missing email or message'}), 400
-        
-        import smtplib
-        from email.mime.text import MIMEText
-        from email.mime.multipart import MIMEMultipart
-        
-        # Get SMTP credentials from environment
-        smtp_server = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
-        smtp_port = int(os.getenv('SMTP_PORT', '587'))
-        sender_email = os.getenv('SENDER_EMAIL', '')
-        sender_password = os.getenv('SENDER_PASSWORD', '')
-        
-        print(f"[Email] SMTP Config:")
-        print(f"  Server: {smtp_server}")
-        print(f"  Port: {smtp_port}")
-        print(f"  From: {sender_email}")
-        print(f"  Password set: {bool(sender_password)}")
-        
-        if not sender_email or not sender_password:
-            print(f"[!] SMTP credentials not configured!")
-            print(f"[!] Set these in .env.local:")
-            print(f"    SMTP_SERVER=smtp.gmail.com")
-            print(f"    SMTP_PORT=587")
-            print(f"    SENDER_EMAIL=your-email@gmail.com")
-            print(f"    SENDER_PASSWORD=your-app-password")
-            return jsonify({
-                'success': False,
-                'message': 'Email service not configured. Please set SMTP credentials.',
-                'sent': False,
-                'debug': 'Missing SMTP_SERVER, SMTP_PORT, SENDER_EMAIL, or SENDER_PASSWORD in .env.local'
-            }), 503
-        
-        # Create email message
-        msg = MIMEMultipart()
-        msg['From'] = sender_email
-        msg['To'] = email
-        msg['Subject'] = subject
-        
-        body = f"""{message}
-
----
-🚨 Emergency Alert from AccessAI
-Time: {time.strftime('%Y-%m-%d %H:%M:%S')}
-User ID: {user_id}
-"""
-        msg.attach(MIMEText(body, 'plain'))
-        
-        print(f"[Email] Connecting to {smtp_server}:{smtp_port}")
-        
-        # Send email with detailed error handling
-        try:
-            with smtplib.SMTP(smtp_server, smtp_port, timeout=10) as server:
-                print(f"[Email] Connected to SMTP server")
-                
-                server.starttls()
-                print(f"[Email] TLS enabled")
-                
-                server.login(sender_email, sender_password)
-                print(f"[Email] Authenticated as {sender_email}")
-                
-                server.send_message(msg)
-                print(f"[✓] Email sent successfully to {contact_name} ({email})")
-        except smtplib.SMTPAuthenticationError as auth_err:
-            print(f"[!] SMTP Authentication failed: {auth_err}")
-            print(f"[!] COMMON SOLUTIONS:")
-            print(f"    1. Gmail: Use App Password, not regular password")
-            print(f"    2. Check email/password spelling")
-            print(f"    3. Enable 'Less secure app access' (if using regular password)")
-            return jsonify({
-                'success': False,
-                'error': 'SMTP Authentication failed (wrong email/password)',
-                'debug': str(auth_err),
-                'hint': 'For Gmail, use App Password not regular password'
-            }), 401
-        except smtplib.SMTPException as smtp_err:
-            print(f"[!] SMTP error: {smtp_err}")
-            return jsonify({
-                'success': False,
-                'error': f'SMTP error: {smtp_err}',
-                'debug': str(smtp_err)
-            }), 500
-        except Exception as send_err:
-            print(f"[!] Error sending message: {send_err}")
-            return jsonify({
-                'success': False,
-                'error': f'Error sending email: {send_err}',
-                'debug': str(send_err)
-            }), 500
-        
-        return jsonify({
-            'success': True,
-            'message': f'Email sent to {contact_name}',
-            'sent': True,
-            'recipient': email
-        }), 200
-        
-    except Exception as e:
-        print(f"[!] Unexpected error in send_emergency_email: {e}")
-        import traceback
-        print(traceback.format_exc())
-        return jsonify({
-            'sent': False
-        }), 500
-
-@app.route('/api/sync-firebase-to-mongodb', methods=['POST'])
-def sync_firebase_to_mongodb():
-    """
-    Sync chat data from Firebase to MongoDB
-    Accepts data fetched from Firebase by frontend
-    """
-    try:
-        if not MONGODB_AVAILABLE:
-            return jsonify({
-                'success': False,
-                'message': 'MongoDB not available',
-                'synced': 0
-            }), 503
-        
-        data = request.json
-        if not data:
-            return jsonify({
-                'success': False,
-                'message': 'No data provided',
-                'synced': 0
-            }), 400
-        
-        db_mongo = get_db()
-        if not db_mongo:
-            return jsonify({
-                'success': False,
-                'message': 'MongoDB connection failed',
-                'synced': 0
-            }), 500
-        
-        synced_count = 0
-        
-        # Sync messages
-        if 'messages' in data and isinstance(data['messages'], list):
-            for msg in data['messages']:
-                try:
-                    db_mongo['messages'].update_one(
-                        {'firebaseId': msg.get('firebaseId', msg.get('id'))},
-                        {'$set': msg},
-                        upsert=True
-                    )
-                    synced_count += 1
-                except Exception as e:
-                    print(f"[!] Error syncing message: {e}")
-        
-        # Sync user profiles
-        if 'users' in data and isinstance(data['users'], list):
-            for user in data['users']:
-                try:
-                    db_mongo['users'].update_one(
-                        {'uid': user.get('uid')},
-                        {'$set': user},
-                        upsert=True
-                    )
-                    synced_count += 1
-                except Exception as e:
-                    print(f"[!] Error syncing user: {e}")
-        
-        # Sync emergency contacts
-        if 'emergency_contacts' in data and isinstance(data['emergency_contacts'], list):
-            for contact in data['emergency_contacts']:
-                try:
-                    db_mongo['emergency_contacts'].update_one(
-                        {'firebaseId': contact.get('firebaseId', contact.get('id'))},
-                        {'$set': contact},
-                        upsert=True
-                    )
-                    synced_count += 1
-                except Exception as e:
-                    print(f"[!] Error syncing contact: {e}")
-        
-        print(f"[✓] Synced {synced_count} records from Firebase to MongoDB")
-        
-        return jsonify({
-            'success': True,
-            'message': f'Synced {synced_count} records',
-            'synced': synced_count
-        }), 200
-        
-    except Exception as e:
-        print(f"[!] Sync error: {e}")
-        return jsonify({
-            'success': False,
-            'error': str(e),
-            'synced': 0
-        }), 500
-
-@app.route('/api/sync-status', methods=['GET'])
-def sync_status():
-    """
-    Get sync status between Firebase and MongoDB
-    """
-    try:
-        if not MONGODB_AVAILABLE:
-            return jsonify({
-                'firebase_available': True,
-                'mongodb_available': False,
-                'message': 'MongoDB not available for backup'
-            }), 503
-        
-        db_mongo = get_db()
-        if not db_mongo:
-            return jsonify({
-                'firebase_available': True,
-                'mongodb_available': False,
-                'message': 'MongoDB connection failed'
-            }), 500
-        
-        # Count records in MongoDB
-        try:
-            msg_count = db_mongo['messages'].count_documents({})
-            user_count = db_mongo['users'].count_documents({})
-            contact_count = db_mongo['emergency_contacts'].count_documents({})
-        except:
-            msg_count = 0
-            user_count = 0
-            contact_count = 0
-        
-        return jsonify({
-            'firebase_available': True,
-            'mongodb_available': True,
-            'mongodb_records': {
-                'messages': msg_count,
-                'users': user_count,
-                'emergency_contacts': contact_count,
-                'total': msg_count + user_count + contact_count
-            },
-            'message': 'Both databases connected and synced'
-        }), 200
-        
-    except Exception as e:
-        return jsonify({
-            'error': str(e)
-        }), 500
-
-@app.route('/api/sync-user-data', methods=['POST'])
-def sync_user_data():
-    """
-    Sync specific user's data from Firebase to MongoDB
-    Frontend sends Firebase data, backend stores in MongoDB
-    """
-    try:
-        if not MONGODB_AVAILABLE:
-            return jsonify({
-                'success': False,
-                'message': 'MongoDB not available',
-                'synced': 0
-            }), 503
-        
-        data = request.json
-        if not data or 'userId' not in data:
-            return jsonify({
-                'success': False,
-                'message': 'userId required in request body',
-                'synced': 0
-            }), 400
-        
-        user_id = data['userId']
-        db_mongo = get_db()
-        
-        if not db_mongo:
-            return jsonify({
-                'success': False,
-                'message': 'MongoDB connection failed',
-                'synced': 0
-            }), 500
-        
-        synced_count = {
-            'messages': 0,
-            'users': 0,
-            'contacts': 0
-        }
-        
-        print(f"[Sync] Starting data sync for user: {user_id}")
-        
-        # Sync user messages
-        if 'messages' in data and isinstance(data['messages'], list):
-            for msg in data['messages']:
-                try:
-                    # Ensure required fields
-                    msg['userId'] = user_id
-                    msg['syncedAt'] = msg.get('syncedAt', time.time())
-                    
-                    db_mongo['messages'].update_one(
-                        {'firebaseId': msg.get('firebaseId', msg.get('id'))},
-                        {'$set': msg},
-                        upsert=True
-                    )
-                    synced_count['messages'] += 1
-                except Exception as e:
-                    if 'duplicate' not in str(e).lower():
-                        print(f"  [!] Error syncing message: {e}")
-        
-        # Sync user profile
-        if 'user_profile' in data and isinstance(data['user_profile'], dict):
-            try:
-                profile = data['user_profile']
-                profile['uid'] = user_id
-                profile['syncedAt'] = profile.get('syncedAt', time.time())
-                
-                db_mongo['users'].update_one(
-                    {'uid': user_id},
-                    {'$set': profile},
-                    upsert=True
-                )
-                synced_count['users'] = 1
-            except Exception as e:
-                print(f"  [!] Error syncing user profile: {e}")
-        
-        # Sync emergency contacts
-        if 'emergency_contacts' in data and isinstance(data['emergency_contacts'], list):
-            for contact in data['emergency_contacts']:
-                try:
-                    contact['userId'] = user_id
-                    contact['syncedAt'] = contact.get('syncedAt', time.time())
-                    
-                    db_mongo['emergency_contacts'].update_one(
-                        {'firebaseId': contact.get('firebaseId', contact.get('id'))},
-                        {'$set': contact},
-                        upsert=True
-                    )
-                    synced_count['contacts'] += 1
-                except Exception as e:
-                    if 'duplicate' not in str(e).lower():
-                        print(f"  [!] Error syncing contact: {e}")
-        
-        total_synced = sum(synced_count.values())
-        print(f"[✓] Synced {total_synced} records for user {user_id}")
-        print(f"    Messages: {synced_count['messages']}")
-        print(f"    User profile: {synced_count['users']}")
-        print(f"    Emergency contacts: {synced_count['contacts']}")
-        
-        return jsonify({
-            'success': True,
-            'message': f'Synced {total_synced} records for user {user_id}',
-            'synced': total_synced,
-            'details': synced_count
-        }), 200
-        
-    except Exception as e:
-        print(f"[!] Sync error: {e}")
-        return jsonify({
-            'success': False,
-            'error': str(e),
-            'synced': 0
-        }), 500
-
-# ========== ENGAGEMENT FEATURES ENDPOINTS ==========
-
-@app.route('/api/youtube-search', methods=['POST'])
-def youtube_search():
-    """
-    Search for YouTube videos related to user query
-    """
-    try:
-        data = request.json
-        query = data.get('query', '')
-        
-        if not query:
-            return jsonify({
-                'success': False,
-                'error': 'Query required',
-                'videos': []
-            }), 400
-        
-        # Use Gemini to generate YouTube search results
-        import google.generativeai as genai
-        
-        api_key = os.getenv('VITE_GEMINI_API_KEY')
-        if not api_key:
-            print("[!] VITE_GEMINI_API_KEY not found in environment")
-            return jsonify({
-                'success': False,
-                'error': 'API key not configured',
-                'videos': []
-            }), 500
-            
-        genai.configure(api_key=api_key)
-        print(f"[*] Searching YouTube for: {query}")
-        
-        prompt = f"""Generate 3 YouTube video recommendations for the query: "{query}"
-        
-        For each video, provide this JSON format (return ONLY valid JSON array):
-        [
-            {{
-                "title": "Relevant video title about {query}",
-                "channel": "Educational Channel",
-                "description": "Brief description",
-                "thumbnail": "https://i.ytimg.com/vi/dQw4w9WgXcQ/maxresdefault.jpg",
-                "url": "https://www.youtube.com/results?search_query={query.replace(' ', '+')}"
-            }}
-        ]
-        
-        Make ALL 3 videos relevant to '{query}'. Use the same YouTube search URL for all videos."""
-        
-        model = genai.GenerativeModel('gemini-2.5-flash')
-        response = model.generate_content(prompt)
-        
-        # Parse response
-        try:
-            # Extract JSON from response
-            response_text = response.text
-            print(f"[*] Gemini response: {response_text[:100]}...")
-            # Find JSON array
-            json_start = response_text.find('[')
-            json_end = response_text.rfind(']') + 1
-            if json_start >= 0 and json_end > json_start:
-                json_str = response_text[json_start:json_end]
-                videos = json.loads(json_str)
-                print(f"[✓] Generated {len(videos)} video recommendations")
-            else:
-                videos = []
-                print("[!] No JSON array found in response")
-        except Exception as parse_error:
-            print(f"[!] Parse error: {parse_error}")
-            videos = []
-        
-        return jsonify({
-            'success': True,
-            'videos': videos,
-            'query': query
-        }), 200
-        
-    except Exception as e:
-        print(f"[!] YouTube search error: {e}")
-        return jsonify({
-            'success': False,
-            'error': str(e),
-            'videos': []
-        }), 500
-
-@app.route('/api/generate-suggestions', methods=['POST'])
-def generate_suggestions():
-    """
-    Generate suggestion topics based on bot's response
-    """
-    try:
-        data = request.json
-        bot_message = data.get('botMessage', '')
-        
-        if not bot_message:
-            return jsonify({
-                'success': False,
-                'error': 'Bot message required',
-                'suggestions': []
-            }), 400
-        
-        # Use Gemini to generate suggestions
-        import google.generativeai as genai
-        
-        api_key = os.getenv('VITE_GEMINI_API_KEY')
-        if not api_key:
-            print("[!] VITE_GEMINI_API_KEY not found in environment")
-            return jsonify({
-                'success': False,
-                'error': 'API key not configured',
-                'suggestions': []
-            }), 500
-            
-        genai.configure(api_key=api_key)
-        print(f"[*] Generating suggestions for: {bot_message[:50]}...")
-        
-        prompt = f"""Based on this message: "{bot_message[:200]}"
-        
-        Generate 3 related follow-up questions the user might ask to learn more.
-        
-        Return ONLY a JSON array like this (no other text, no markdown):
-        ["Question 1?", "Question 2?", "Question 3?"]
-        
-        Make them specific, relevant, and end with question marks."""
-        
-        model = genai.GenerativeModel('gemini-2.5-flash')
-        response = model.generate_content(prompt)
-        
-        # Parse response
-        try:
-            response_text = response.text
-            print(f"[*] Gemini response: {response_text[:100]}...")
-            json_start = response_text.find('[')
-            json_end = response_text.rfind(']') + 1
-            if json_start >= 0 and json_end > json_start:
-                json_str = response_text[json_start:json_end]
-                suggestions = json.loads(json_str)
-                print(f"[✓] Generated {len(suggestions)} suggestions")
-            else:
-                suggestions = []
-                print("[!] No JSON array found in response")
-        except Exception as parse_error:
-            print(f"[!] Parse error: {parse_error}")
-            suggestions = []
-        
-        return jsonify({
-            'success': True,
-            'suggestions': suggestions[:3]  # Return max 3 suggestions
-        }), 200
-        
-    except Exception as e:
-        print(f"[!] Generate suggestions error: {e}")
-        return jsonify({
-            'success': False,
-            'error': str(e),
-            'suggestions': []
-        }), 500
-
-@app.route('/api/save-message', methods=['POST', 'OPTIONS'])
-def save_message():
-    """
-    Save a message to MongoDB (for large images that exceed Firebase 1MB limit)
-    """
+@app.route('/api/huggingface/generate-image', methods=['POST', 'OPTIONS'])
+def generate_image_hf():
+    """Generate image using Hugging Face API (proxy endpoint to avoid CORS)"""
     if request.method == 'OPTIONS':
-        return '', 200
-    
-    try:
-        data = request.json
-        
-        if not MONGODB_AVAILABLE:
-            return jsonify({
-                'success': False,
-                'error': 'MongoDB not available'
-            }), 500
-        
-        user_id = data.get('userId')
-        chat_id = data.get('chatId')
-        message_data = data.get('messageData', {})
-        
-        if not user_id or not chat_id:
-            return jsonify({
-                'success': False,
-                'error': 'userId and chatId required'
-            }), 400
-        
-        # Add metadata for querying
-        message_doc = {
-            'userId': user_id,
-            'chatId': str(chat_id),
-            **message_data
-        }
-        
-        # Save to MongoDB messages collection
-        db = get_db()
-        if db is not None:
-            result = db['messages'].insert_one(message_doc)
-            print(f"[✓] Message saved to MongoDB with ID: {result.inserted_id}")
-            return jsonify({
-                'success': True,
-                'location': 'mongodb',
-                'messageId': str(result.inserted_id)
-            }), 200
-        else:
-            return jsonify({
-                'success': False,
-                'error': 'MongoDB connection not available'
-            }), 500
-        
-    except Exception as e:
-        print(f"[!] Save message error: {e}")
-        import traceback
-        print(traceback.format_exc())
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
-
-@app.route('/api/get-messages', methods=['POST', 'OPTIONS'])
-def get_messages():
-    """
-    Get messages from MongoDB for a specific chat
-    """
-    if request.method == 'OPTIONS':
-        return '', 200
-    
-    try:
-        data = request.json
-        user_id = data.get('userId')
-        chat_id = data.get('chatId')
-        
-        if not user_id or not chat_id:
-            return jsonify({
-                'success': False,
-                'error': 'userId and chatId required'
-            }), 400
-        
-        if not MONGODB_AVAILABLE:
-            return jsonify({
-                'success': True,
-                'messages': []  # Return empty array if MongoDB not available
-            }), 200
-        
-        # Query MongoDB for messages
-        db = get_db()
-        if db is not None:
-            messages = list(db['messages'].find(
-                {'userId': user_id, 'chatId': str(chat_id)},
-                {'_id': 1, 'text': 1, 'sender': 1, 'timestamp': 1, 'attachment': 1}
-            ).sort('timestamp', 1))  # Sort by timestamp ascending
-            
-            # Convert ObjectId to string
-            for msg in messages:
-                msg['_id'] = str(msg['_id'])
-            
-            print(f"[✓] Retrieved {len(messages)} messages from MongoDB")
-            return jsonify({
-                'success': True,
-                'messages': messages
-            }), 200
-        else:
-            return jsonify({
-                'success': False,
-                'error': 'MongoDB connection not available'
-            }), 500
-        
-    except Exception as e:
-        print(f"[!] Get messages error: {e}")
-        import traceback
-        print(traceback.format_exc())
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
-
-@app.route('/api/generate-image', methods=['POST', 'OPTIONS'])
-def generate_image_api():
-    """
-    Generate image using Hugging Face API (proxied through backend to avoid CORS)
-    """
-    if request.method == 'OPTIONS':
-        return '', 200
+        return '', 204
     
     try:
         data = request.json
         prompt = data.get('prompt', '')
+        model = data.get('model', 'stabilityai/stable-diffusion-xl-base-1.0')
         
         if not prompt:
-            return jsonify({
-                'success': False,
-                'error': 'Prompt is required'
-            }), 400
+            return jsonify({'error': True, 'message': 'Prompt is required'}), 400
         
-        print(f"[*] Image generation request: {prompt[:100]}...")
+        # Get Hugging Face token from environment
+        hf_token = os.getenv('HUGGINGFACE_API_KEY') or os.getenv('HF_TOKEN')
         
-        # Get HF token from environment
-        hf_token = os.getenv('VITE_HF_TOKEN')
         if not hf_token:
             return jsonify({
-                'success': False,
-                'error': 'Hugging Face token not configured'
+                'error': True,
+                'message': 'Hugging Face API token not configured. Add HUGGINGFACE_API_KEY to .env'
             }), 500
         
-        # Use nscale API endpoint for fast image generation
-        import base64
+        import requests
         
-        print(f"[*] Calling Hugging Face nscale API...")
-        
-        # nscale API endpoint
-        api_url = "https://router.huggingface.co/nscale/v1/images/generations"
-        
+        # Call Hugging Face API
         headers = {
-            "Authorization": f"Bearer {hf_token}",
-            "Content-Type": "application/json"
+            'Authorization': f'Bearer {hf_token}',
+            'Content-Type': 'application/json'
         }
         
         payload = {
-            "response_format": "b64_json",
-            "prompt": prompt,
-            "model": "black-forest-labs/FLUX.1-schnell"
+            'inputs': prompt,
+            'parameters': {
+                'negative_prompt': data.get('negative_prompt', 'blurry, bad quality, distorted'),
+                'num_inference_steps': data.get('steps', 30),
+                'guidance_scale': data.get('guidance', 7.5),
+                'width': data.get('width', 512),
+                'height': data.get('height', 512)
+            }
         }
         
-        response = requests.post(api_url, headers=headers, json=payload)
+        print(f"[🎨] Generating image: {prompt}")
         
-        if response.status_code != 200:
-            error_msg = f"API returned status {response.status_code}"
+        response = requests.post(
+            f'https://router.huggingface.co/models/{model}',
+            headers=headers,
+            json=payload,
+            timeout=60
+        )
+        
+        if response.status_code == 503:
+            # Model is loading
             try:
-                error_detail = response.json()
-                error_msg = f"{error_msg}: {error_detail}"
+                error_data = response.json()
+                estimated_time = error_data.get('estimated_time', 20)
+                return jsonify({
+                    'error': True,
+                    'message': f'Model is loading. Please wait {estimated_time} seconds.',
+                    'loading': True,
+                    'estimated_time': estimated_time
+                }), 503
             except:
-                error_msg = f"{error_msg}: {response.text}"
-            print(f"[!] {error_msg}")
+                return jsonify({
+                    'error': True,
+                    'message': 'Model is loading. Please try again in 20 seconds.',
+                    'loading': True
+                }), 503
+        
+        if not response.ok:
+            error_msg = response.text
+            try:
+                error_json = response.json()
+                error_msg = error_json.get('error', error_msg)
+            except:
+                pass
+            
             return jsonify({
-                'success': False,
-                'error': error_msg
+                'error': True,
+                'message': f'Hugging Face API error: {error_msg}'
             }), response.status_code
         
-        # Parse the response
-        result = response.json()
+        # Convert image bytes to base64
+        import base64
+        image_bytes = response.content
+        image_base64 = base64.b64encode(image_bytes).decode('utf-8')
         
-        # nscale returns b64_json format with data array
-        if 'data' in result and len(result['data']) > 0:
-            base64_image = result['data'][0].get('b64_json', '')
-            
-            print(f"[✓] Image generated successfully (base64 length: {len(base64_image)})")
-            
-            return jsonify({
-                'success': True,
-                'image': f'data:image/png;base64,{base64_image}',
-                'size': len(base64_image)
-            }), 200
-        else:
-            print(f"[!] Unexpected response format: {result}")
-            return jsonify({
-                'success': False,
-                'error': 'Unexpected API response format'
-            }), 500
+        print(f"[✓] Image generated successfully: {len(image_base64)} bytes")
+        
+        return jsonify({
+            'error': False,
+            'image': f'data:image/jpeg;base64,{image_base64}',
+            'prompt': prompt,
+            'model': model
+        }), 200
         
     except Exception as e:
         import traceback
         print(f"[!] Image generation error: {e}")
         print(traceback.format_exc())
         return jsonify({
-            'success': False,
-            'error': str(e)
+            'error': True,
+            'message': str(e)
+        }), 500
+
+@app.route('/api/zimage/generate', methods=['POST', 'OPTIONS'])
+def generate_image_zimage():
+    """Generate image using Z-Image via fal-ai provider (Hugging Face Inference API)"""
+    if request.method == 'OPTIONS':
+        return '', 204
+    
+    try:
+        data = request.json
+        prompt = data.get('prompt', '')
+        model = data.get('model', 'Tongyi-MAI/Z-Image')
+        
+        if not prompt:
+            return jsonify({'error': True, 'message': 'Prompt is required'}), 400
+        
+        # Get Hugging Face token from environment
+        hf_token = os.getenv('HUGGINGFACE_API_KEY') or os.getenv('HF_TOKEN') or os.getenv('VITE_HUGGINGFACE_API_KEY')
+        
+        if not hf_token:
+            return jsonify({
+                'error': True,
+                'message': 'Hugging Face API token not configured. Add HUGGINGFACE_API_KEY to .env'
+            }), 500
+        
+        import requests
+        
+        # Z-Image requires fal-ai provider via Hugging Face Inference API
+        # Using direct API call to fal-ai model
+        headers = {
+            'Authorization': f'Bearer {hf_token}',
+            'Content-Type': 'application/json'
+        }
+        
+        # Z-Image specific parameters
+        payload = {
+            'inputs': prompt,
+            'parameters': {
+                'negative_prompt': data.get('negative_prompt', ''),
+                'num_inference_steps': data.get('steps', 50),  # Z-Image default: 50
+                'guidance_scale': data.get('guidance', 4.0),  # Z-Image default: 4.0
+                'width': data.get('width', 720),
+                'height': data.get('height', 1280),
+                'seed': data.get('seed', None)
+            }
+        }
+        
+        # Remove None values
+        payload['parameters'] = {k: v for k, v in payload['parameters'].items() if v is not None}
+        
+        print(f"[🎨] Z-Image Generation: {prompt[:100]}...")
+        print(f"[🎨] Size: {payload['parameters'].get('width')}x{payload['parameters'].get('height')}")
+        
+        # Try with fal-ai inference API
+        response = requests.post(
+            f'https://api-inference.huggingface.co/models/{model}',
+            headers=headers,
+            json=payload,
+            timeout=120  # Z-Image may take longer
+        )
+        
+        if response.status_code == 503:
+            # Model is loading
+            try:
+                error_data = response.json()
+                estimated_time = error_data.get('estimated_time', 30)
+                return jsonify({
+                    'error': True,
+                    'message': f'Z-Image model is loading. Please wait {estimated_time} seconds.',
+                    'loading': True,
+                    'estimated_time': estimated_time
+                }), 503
+            except:
+                return jsonify({
+                    'error': True,
+                    'message': 'Z-Image model is loading. Please try again in 30 seconds.',
+                    'loading': True
+                }), 503
+        
+        if response.status_code == 401:
+            return jsonify({
+                'error': True,
+                'message': 'Invalid Hugging Face API key. Check your token.'
+            }), 401
+        
+        if response.status_code == 429:
+            return jsonify({
+                'error': True,
+                'message': 'Rate limit exceeded. Please wait a moment and try again.'
+            }), 429
+        
+        if not response.ok:
+            error_msg = response.text
+            try:
+                error_json = response.json()
+                error_msg = error_json.get('error', error_msg)
+            except:
+                pass
+            
+            return jsonify({
+                'error': True,
+                'message': f'Z-Image API error: {error_msg}'
+            }), response.status_code
+        
+        # Convert image bytes to base64
+        import base64
+        image_bytes = response.content
+        image_base64 = base64.b64encode(image_bytes).decode('utf-8')
+        
+        # Detect image format from response headers
+        content_type = response.headers.get('content-type', 'image/png')
+        if 'jpeg' in content_type or 'jpg' in content_type:
+            mime = 'image/jpeg'
+        elif 'png' in content_type:
+            mime = 'image/png'
+        elif 'webp' in content_type:
+            mime = 'image/webp'
+        else:
+            mime = 'image/png'
+        
+        print(f"[✓] Z-Image generated successfully: {len(image_base64)} characters ({len(image_bytes)} bytes)")
+        
+        return jsonify({
+            'error': False,
+            'success': True,
+            'imageData': f'data:{mime};base64,{image_base64}',
+            'prompt': prompt,
+            'model': model,
+            'size': f"{payload['parameters'].get('width')}x{payload['parameters'].get('height')}",
+            'provider': 'fal-ai',
+            'timestamp': time.time()
+        }), 200
+        
+    except requests.exceptions.Timeout:
+        print(f"[!] Z-Image generation timeout")
+        return jsonify({
+            'error': True,
+            'message': 'Image generation timed out. The model may be busy. Please try again.'
+        }), 504
+        
+    except Exception as e:
+        import traceback
+        print(f"[!] Z-Image generation error: {e}")
+        print(traceback.format_exc())
+        return jsonify({
+            'error': True,
+            'message': str(e)
         }), 500
 
 if __name__ == '__main__':
@@ -1956,14 +1344,6 @@ if __name__ == '__main__':
         print(f"[INFO] Models loaded: {gesture_model is not None}")
         print(f"[INFO] Hand Landmarker model: hand_landmarker.task")
         print(f"[INFO] Gesture classes: {len(GESTURE_LABELS)} (1-9, A-Z)")
-        
-        # Initialize MongoDB
-        if MONGODB_AVAILABLE:
-            print("[*] Initializing MongoDB...")
-            connect_mongodb()
-        else:
-            print("[!] MongoDB not available")
-        
         print("=" * 70)
         print("Starting Flask server on http://localhost:5000")
         print("=" * 70)
@@ -1976,9 +1356,4 @@ if __name__ == '__main__':
         import traceback
         print(f"[FATAL] Flask crashed: {e}")
         print(traceback.format_exc())
-        if MONGODB_AVAILABLE:
-            close_connection()
         sys.exit(1)
-    finally:
-        if MONGODB_AVAILABLE:
-            close_connection()

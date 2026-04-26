@@ -90,6 +90,28 @@ const SOS = ({ user, emergencyContacts, onEmergencyTriggered, db }) => {
     setIsSending(true);
 
     try {
+      // Trigger ESP32 buzzer for 2 minutes (120,000 ms)
+      console.log('🔔 Triggering ESP32 buzzer for 2 minutes...');
+      try {
+        const buzzerResponse = await fetch('http://localhost:3001/api/trigger-esp32-alert', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            deviceId: 'main',
+            duration: 120000  // 2 minutes
+          })
+        });
+        
+        if (buzzerResponse.ok) {
+          const buzzerData = await buzzerResponse.json();
+          console.log('✅ ESP32 Buzzer activated:', buzzerData.message);
+        } else {
+          console.warn('⚠️ Could not activate ESP32 buzzer');
+        }
+      } catch (buzzerError) {
+        console.warn('⚠️ ESP32 buzzer connection error:', buzzerError.message);
+      }
+
       const message = `🚨 EMERGENCY ALERT 🚨\n\n${user.displayName || 'Someone'} needs help immediately!\n\nTime: ${new Date().toLocaleString()}\n\nPlease respond or call emergency services.`;
 
       // Send to all contacts

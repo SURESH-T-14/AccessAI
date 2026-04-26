@@ -61,3 +61,5 @@ firebase-service-account.json
 *.mp4
 *.avi
 *.mov
+
+firebase-admin-sdk.json

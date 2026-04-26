@@ -28,9 +28,66 @@ const FileUpload = ({ onAnalysisComplete, onError }) => {
   const readFileAsBase64 = (file) => {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
-      reader.onload = (e) => resolve(e.target.result);
+      reader.onload = async (e) => {
+        let base64Data = e.target.result;
+        
+        // If it's an image, check size and compress if needed
+        if (file.type.startsWith('image/')) {
+          const sizeInMB = base64Data.length / (1024 * 1024);
+          console.log(`📊 Original image size: ${sizeInMB.toFixed(2)}MB`);
+          
+          // If image is larger than 800KB, compress it
+          if (sizeInMB > 0.8) {
+            console.log('🔄 Compressing image...');
+            try {
+              base64Data = await compressImage(base64Data, file.type);
+              const newSizeInMB = base64Data.length / (1024 * 1024);
+              console.log(`✅ Compressed image size: ${newSizeInMB.toFixed(2)}MB`);
+            } catch (compressError) {
+              console.warn('⚠️ Image compression failed, using original:', compressError);
+            }
+          }
+        }
+        
+        resolve(base64Data);
+      };
       reader.onerror = (e) => reject(e);
       reader.readAsDataURL(file);
+    });
+  };
+
+  const compressImage = (base64Data, mimeType) => {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        let width = img.width;
+        let height = img.height;
+        
+        // Scale down if image is too large
+        const maxDimension = 1200; // Max width or height
+        if (width > maxDimension || height > maxDimension) {
+          if (width > height) {
+            height = (height / width) * maxDimension;
+            width = maxDimension;
+          } else {
+            width = (width / height) * maxDimension;
+            height = maxDimension;
+          }
+        }
+        
+        canvas.width = width;
+        canvas.height = height;
+        
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, width, height);
+        
+        // Convert to JPEG with 0.7 quality for better compression
+        const compressedBase64 = canvas.toDataURL('image/jpeg', 0.7);
+        resolve(compressedBase64);
+      };
+      img.onerror = reject;
+      img.src = base64Data;
     });
   };
 
@@ -88,25 +145,21 @@ const FileUpload = ({ onAnalysisComplete, onError }) => {
 
       setAnalysis(response.data);
       
-      // Ensure all file data is properly passed to chat
-      const completeFileData = {
-        name: file.name,
-        type: file.type,
-        size: file.size,
-        data: base64Data,
-        isImage: file.type.startsWith('image/'),
-        extractedText: response.data.extracted_text // Add extracted text
-      };
-      
-      const completeData = {
+      // Include fileData in the analysis response for chat attachments
+      const analysisWithFile = {
         ...response.data,
-        fileData: completeFileData
+        fileData: {
+          name: file.name,
+          type: file.type,
+          isImage: file.type.startsWith('image/'),
+          data: base64Data
+        }
       };
       
-      onAnalysisComplete?.(completeData);
+      onAnalysisComplete?.(analysisWithFile);
       
       // Show success message
-      console.log('✅ File analyzed successfully:', response.data);
+      console.log('✅ File analyzed successfully:', analysisWithFile);
     } catch (error) {
       const errorMessage = error.message || 'Failed to upload file';
       onError?.(errorMessage);

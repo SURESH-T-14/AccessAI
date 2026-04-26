@@ -25,21 +25,23 @@ class GoogleSearchService {
       return [];
     }
 
+    if (!GOOGLE_SEARCH_ENGINE_ID) {
+      console.warn('Google Custom Search Engine ID not configured. Create one at https://programmablesearchengine.google.com/');
+      return [];
+    }
+
     try {
       const url = new URL('https://www.googleapis.com/customsearch/v1');
       url.searchParams.append('q', query);
       url.searchParams.append('key', GOOGLE_SEARCH_API_KEY);
-      
-      if (GOOGLE_SEARCH_ENGINE_ID) {
-        url.searchParams.append('cx', GOOGLE_SEARCH_ENGINE_ID);
-      }
-      
+      url.searchParams.append('cx', GOOGLE_SEARCH_ENGINE_ID);
       url.searchParams.append('num', Math.min(maxResults, 10));
 
       const response = await fetch(url.toString());
       
       if (!response.ok) {
-        console.error('Google Search API error:', response.statusText);
+        const errorData = await response.json().catch(() => ({}));
+        console.error('Google Search API error:', response.statusText, errorData);
         return [];
       }
 

@@ -66,7 +66,9 @@ const Translator = ({ onClose }) => {
         } else if (translationProvider === 'gemini') {
           result = await TranslationService.translateWithGemini(inputText, targetLanguage, sourceLanguage);
         } else if (translationProvider === 'openai') {
-          result = await TranslationService.translateWithOpenAI(inputText, targetLanguage, sourceLanguage);
+          // OpenAI quota exceeded - fallback to Gemini
+          console.warn('⚠️ OpenAI not available, using Gemini instead');
+          result = await TranslationService.translateWithGemini(inputText, targetLanguage, sourceLanguage);
         } else {
           result = await TranslationService.translate(inputText, targetLanguage, sourceLanguage);
         }

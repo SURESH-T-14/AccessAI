@@ -220,24 +220,26 @@ export class EmergencyContactService {
   }
 
   /**
-   * Log emergency event for tracking/compliance
+   * Log emergency event for tracking/compliance (Optional - won't block if fails)
    */
   static async logEmergencyEvent(userId, eventData, db) {
     try {
+      // Firestore logging is optional - don't block emergency if it fails
       const { addDoc, collection } = await import('firebase/firestore');
       
       await addDoc(collection(db, 'users', userId, 'emergency_events'), {
         timestamp: new Date(),
         contactsNotified: eventData.emergencyContacts.length,
         contacts: eventData.emergencyContacts.map(c => c.name),
-        detectionMethod: eventData.detectionMethod || 'image_detection',
+        detectionMethod: eventData.detectionMethod || 'manual_sos',
         status: 'triggered'
       });
 
       console.log('✅ Emergency event logged');
       return true;
     } catch (error) {
-      console.error('❌ Error logging emergency event:', error);
+      console.warn('⚠️ Could not log emergency event to Firestore (non-blocking):', error.message);
+      // Don't throw - this is non-critical. SMS/Email was already sent.
       return false;
     }
   }

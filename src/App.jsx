@@ -3,9 +3,10 @@ import {
   Waves, Send, X,
   Bot, User, BrainCircuit, Sparkles
 } from "lucide-react";
+import { InferenceClient } from "@huggingface/inference";
 import { initializeApp } from "firebase/app";
 import { getAuth, signOut, onAuthStateChanged } from "firebase/auth";
-import { getFirestore, collection, addDoc, query, onSnapshot, serverTimestamp, doc, deleteDoc, orderBy } from "firebase/firestore";
+import { getFirestore, collection, addDoc, query, onSnapshot, serverTimestamp, deleteDoc } from "firebase/firestore";
 import GestureRecognition from './components/GestureRecognition';
 import LoadingSpinner from './components/LoadingSpinner';
 import PerformanceMonitor from './components/PerformanceMonitor';
@@ -15,140 +16,15 @@ import Translator from './components/Translator';
 import Login from './components/Login';
 import SOS from './components/SOS';
 import FileUpload from './components/FileUpload';
+import FormattedMessage from './components/FormattedMessage';
 import { ToastProvider, useToast } from './components/Toast';
 import { validateChatInput, sanitizeInput } from './utils/validation';
 import NLPService from './services/NLPService';
 import GoogleSearchService from './services/GoogleSearchService';
 import EmergencyContactService from './services/EmergencyContactService';
-import { TranslationService } from './services/TranslationService';
+import HuggingFaceService from './services/HuggingFaceService';
+import ZImageService from './services/ZImageService';
 import useSparklerTrail from './hooks/useSparklerTrail';
-
-/* --- CODE BLOCK RENDERER WITH SYNTAX HIGHLIGHTING --- */
-const renderMessageWithCodeHighlight = (text) => {
-  const codeBlockRegex = /```(\w+)?\n([\s\S]*?)```/g;
-  const parts = [];
-  let lastIndex = 0;
-  let match;
-
-  while ((match = codeBlockRegex.exec(text)) !== null) {
-    // Add text before code block
-    if (match.index > lastIndex) {
-      parts.push({
-        type: 'text',
-        content: text.substring(lastIndex, match.index)
-      });
-    }
-
-    // Add code block
-    const language = match[1] || 'javascript';
-    const code = match[2];
-    
-    parts.push({
-      type: 'code',
-      language: language,
-      content: code
-    });
-
-    lastIndex = match.index + match[0].length;
-  }
-
-  // Add remaining text
-  if (lastIndex < text.length) {
-    parts.push({
-      type: 'text',
-      content: text.substring(lastIndex)
-    });
-  }
-
-  return parts.map((part, idx) => {
-    if (part.type === 'code') {
-      // Apply syntax highlighting
-      const highlighted = window.hljs ? window.hljs.highlight(part.content, { 
-        language: part.language,
-        ignoreIllegals: true 
-      }).value : part.content;
-
-      return (
-        <div key={idx} style={{
-          background: 'rgba(0, 0, 0, 0.3)',
-          borderRadius: '8px',
-          padding: '1rem',
-          margin: '0.8rem 0',
-          overflow: 'auto',
-          fontSize: '0.85rem',
-          fontFamily: "'Courier New', monospace",
-          lineHeight: '1.5'
-        }}>
-          <div style={{
-            color: '#888',
-            fontSize: '0.75rem',
-            marginBottom: '0.5rem',
-            fontWeight: '600'
-          }}>
-            {part.language}
-          </div>
-          <code 
-            dangerouslySetInnerHTML={{ __html: highlighted }}
-            style={{
-              color: '#e8e8e8',
-              display: 'block',
-              whiteSpace: 'pre',
-              tabSize: 4,
-              MozTabSize: 4,
-              WebkitTabSize: 4
-            }}
-          />
-        </div>
-      );
-    } else {
-      // Process inline code in text parts
-      const inlineCodeRegex = /`([^`]+)`/g;
-      const textParts = [];
-      let textLastIndex = 0;
-      let inlineMatch;
-      
-      while ((inlineMatch = inlineCodeRegex.exec(part.content)) !== null) {
-        if (inlineMatch.index > textLastIndex) {
-          textParts.push(
-            <span key={`t${textLastIndex}`}>
-              {part.content.substring(textLastIndex, inlineMatch.index)}
-            </span>
-          );
-        }
-        textParts.push(
-          <code key={`c${inlineMatch.index}`} style={{
-            background: 'rgba(0, 0, 0, 0.3)',
-            padding: '0.15rem 0.4rem',
-            borderRadius: '4px',
-            fontFamily: "'Courier New', monospace",
-            fontSize: '0.9em',
-            color: '#e8e8e8'
-          }}>
-            {inlineMatch[1]}
-          </code>
-        );
-        textLastIndex = inlineMatch.index + inlineMatch[0].length;
-      }
-      
-      if (textLastIndex < part.content.length) {
-        textParts.push(
-          <span key={`t${textLastIndex}`}>
-            {part.content.substring(textLastIndex)}
-          </span>
-        );
-      }
-      
-      return (
-        <div key={idx} style={{ 
-          whiteSpace: 'pre-wrap',
-          overflowWrap: 'break-word'
-        }}>
-          {textParts.length > 0 ? textParts : part.content}
-        </div>
-      );
-    }
-  });
-};
 
 /* --- FIREBASE CONFIG FROM ENV VARIABLES --- */
 const firebaseConfig = {
@@ -171,18 +47,34 @@ if (isFirebaseConfigured) {
     app = initializeApp(firebaseConfig);
     auth = getAuth(app);
     db = getFirestore(app);
+    console.log("✅ Firebase initialized successfully");
   } catch (error) {
-    console.error("Firebase initialization error:", error);
+    console.error("❌ Firebase initialization error:", error);
   }
+} else {
+  console.warn("⚠️ Firebase not configured - check .env file");
 }
 
-/* --- GEMINI API CONFIG FROM ENV VARIABLES --- */
-const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
-const GEMINI_MODEL = "gemini-2.5-flash-preview-09-2025";
-const GEMINI_URL = apiKey 
-  ? `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`
-  : null;
-const isGeminiConfigured = Boolean(apiKey);
+/* --- AI API CONFIG (OpenAI + Hugging Face Fallback) --- */
+const openaiKey = import.meta.env.VITE_OPENAI_API_KEY;
+const huggingfaceKey = import.meta.env.VITE_HUGGINGFACE_API_KEY;
+const OPENAI_MODEL = "gpt-3.5-turbo";
+const OPENAI_URL = "https://api.openai.com/v1/chat/completions";
+// Using Qwen2.5-7B-Instruct via Hugging Face API (better quality, still free)
+const HF_MODEL = "Qwen/Qwen2.5-7B-Instruct";
+const HF_URL = "https://api-inference.huggingface.co/models/" + HF_MODEL;
+const isOpenAIConfigured = Boolean(openaiKey);
+const isHFConfigured = Boolean(huggingfaceKey);
+const isAIConfigured = isOpenAIConfigured || isHFConfigured;
+
+// Log configuration status
+console.log("🔧 Configuration Status:", {
+  openAIConfigured: isOpenAIConfigured,
+  huggingFaceConfigured: isHFConfigured,
+  firebaseConfigured: isFirebaseConfigured,
+  primaryProvider: isOpenAIConfigured ? "OpenAI" : "Hugging Face",
+  fallbackAvailable: isHFConfigured
+});
 
 /* --- SIGN LANGUAGE GLYPHS --- */
 const SIGN_GLYPHS = {
@@ -207,8 +99,8 @@ const SIGN_IMAGES = {
   'q': '/signs/q.jpg', 'r': '/signs/r.jpg', 's': '/signs/s.jpg', 't': '/signs/t.jpg', 
   'u': '/signs/u.jpg', 'v': '/signs/v.jpg', 'w': '/signs/w.jpg', 'x': '/signs/x.jpg',
   'y': '/signs/y.jpg', 'z': '/signs/z.jpg',
-  // Numbers 0-9
-  '0': '/signs/0.jpg', '1': '/signs/1.jpg', '2': '/signs/2.jpg', '3': '/signs/3.jpg',
+  // Numbers 1-9 (0 image not available)
+  '1': '/signs/1.jpg', '2': '/signs/2.jpg', '3': '/signs/3.jpg',
   '4': '/signs/4.jpg', '5': '/signs/5.jpg', '6': '/signs/6.jpg', '7': '/signs/7.jpg',
   '8': '/signs/8.jpg', '9': '/signs/9.jpg',
   // Special characters
@@ -222,8 +114,8 @@ const SIGN_IMAGES = {
   '/': '/signs/slanding line.jpg', ':': '/signs/two dot.jpg', ';': '/signs/;.jpg',
   '"': '/signs/double qoutes.jpg', "'": '/signs/\'.jpg',
   '<': '/signs/v brases.jpg', '>': '/signs/v brases.jpg', ',': '/signs/,.jpg',
-  '?': '/signs/question mark.jpg',
-  'hello': '/signs/hello.jpg', 'yes': '/signs/yes.jpg', 'no': '/signs/no.jpg'
+  '?': '/signs/question mark.jpg'
+  // Note: 'hello', 'yes', 'no', and '0' images not available - will show emoji glyphs instead
 };
 
 const translateToSignGlyph = (text) => {
@@ -232,486 +124,157 @@ const translateToSignGlyph = (text) => {
   return lowerText.split('').map(char => SIGN_GLYPHS[char] || char).join('');
 };
 
-/**
- * Detect language preference from user input
- * Looks for patterns like "give me in tamil", "respond in tamil", "write in tamil" etc.
- */
-const detectLanguagePreference = (text) => {
-  const lowerText = text.toLowerCase().trim();
-  
-  // Map of language patterns to language codes
-  const languagePatterns = {
-    tamil: ['tamil', 'tamil', 'ta'],
-    telugu: ['telugu', 'telgu'],
-    kannada: ['kannada', 'kanada'],
-    malayalam: ['malayalam', 'malayaalam'],
-    marathi: ['marathi', 'marathi'],
-    hindi: ['hindi', 'hindustani'],
-    bengali: ['bengali', 'bangla'],
-    gujarati: ['gujarati'],
-    punjabi: ['punjabi', 'panjabi'],
-    english: ['english', 'en'],
-    spanish: ['spanish', 'español'],
-    french: ['french'],
-    german: ['german'],
-    chinese: ['chinese', 'mandarin'],
-    japanese: ['japanese'],
-    korean: ['korean'],
-    arabic: ['arabic'],
+/* --- GENERATED IMAGE DISPLAY COMPONENT --- */
+const GeneratedImageDisplay = ({ imageRef, userId, chatId }) => {
+  const [imageSrc, setImageSrc] = useState(imageRef.fullImage || null);
+  const [isLoading, setIsLoading] = useState(!imageRef.fullImage && imageRef.mongoOnly);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    // If image is stored in MongoDB only, fetch it
+    if (imageRef.mongoOnly && imageRef.id && !imageSrc) {
+      const fetchImage = async () => {
+        try {
+          setIsLoading(true);
+          const response = await fetch(`http://localhost:3001/api/get-images/${userId}/${chatId}`);
+          
+          if (!response.ok) {
+            throw new Error('Failed to fetch image from database');
+          }
+          
+          const data = await response.json();
+          const image = data.images.find(img => img.id === imageRef.id);
+          
+          if (image && image.image) {
+            setImageSrc(image.image);
+          } else {
+            throw new Error('Image not found in database');
+          }
+        } catch (err) {
+          console.error('Failed to fetch image:', err);
+          setError(err.message);
+        } finally {
+          setIsLoading(false);
+        }
+      };
+      
+      fetchImage();
+    }
+  }, [imageRef, userId, chatId, imageSrc]);
+
+  if (error) {
+    return (
+      <div style={{
+        padding: '1rem',
+        background: 'rgba(239, 68, 68, 0.1)',
+        border: '1px solid rgba(239, 68, 68, 0.3)',
+        borderRadius: '8px',
+        color: '#ef4444'
+      }}>
+        ⚠️ Failed to load image: {error}
+      </div>
+    );
+  }
+
+  if (isLoading) {
+    return (
+      <div style={{
+        padding: '1rem',
+        background: 'rgba(59, 130, 246, 0.1)',
+        border: '1px solid rgba(59, 130, 246, 0.3)',
+        borderRadius: '8px',
+        display: 'flex',
+        alignItems: 'center',
+        gap: '0.5rem'
+      }}>
+        ⏳ Loading image from database...
+      </div>
+    );
+  }
+
+  if (!imageSrc) {
+    return null;
+  }
+
+  const downloadImage = () => {
+    if (!imageSrc) return;
+    
+    try {
+      const link = document.createElement('a');
+      link.href = imageSrc;
+      link.download = `${imageRef.prompt?.replace(/[^a-z0-9]/gi, '_').toLowerCase() || 'generated-image'}.png`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      console.log('✅ Image downloaded');
+    } catch (error) {
+      console.error('❌ Download failed:', error);
+    }
   };
 
-  // Check for language preference patterns
-  const patterns = [
-    /give\s+me\s+in\s+(\w+)/i,
-    /respond\s+in\s+(\w+)/i,
-    /write\s+in\s+(\w+)/i,
-    /speak\s+in\s+(\w+)/i,
-    /translate\s+to\s+(\w+)/i,
-    /answer\s+in\s+(\w+)/i,
-    /reply\s+in\s+(\w+)/i,
-  ];
-
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (match && match[1]) {
-      const lang = match[1].toLowerCase().trim();
-      // Find matching language
-      for (const [key, values] of Object.entries(languagePatterns)) {
-        if (values.some(v => v.includes(lang) || lang.includes(v))) {
-          return key; // Return the language code
-        }
-      }
-    }
-  }
-  
-  return null; // No language preference detected
-};
-
-/**
- * Speak text using backend Text-to-Speech API (supports Tamil, Telugu, etc.)
- * Calls the Flask backend TTS endpoint for better language support
- */
-const speakWithTranslation = async (text) => {
-  if (!text) return;
-
-  try {
-    // Detect the language of the text
-    const detectionResult = await TranslationService.detectLanguage(text);
-    const detectedLang = detectionResult.language || 'en';
-
-    console.log(`🎤 [Backend TTS] Speaking in ${detectedLang}`);
-
-    // Call the backend TTS API
-    const ttsResponse = await fetch('http://localhost:5000/api/tts', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        text: text,
-        language: detectedLang
-      })
-    });
-
-    if (ttsResponse.ok) {
-      // Get the audio blob from the response
-      const audioBlob = await ttsResponse.blob();
-      const audioUrl = URL.createObjectURL(audioBlob);
-      
-      console.log(`✅ Playing Tamil/Indian language speech`);
-      
-      // Create and play the audio
-      const audio = new Audio(audioUrl);
-      audio.play().catch(err => {
-        console.warn('⚠️ Audio playback failed:', err);
-        fallbackToSystemSpeech(text, detectedLang);
-      });
-    } else {
-      console.warn('⚠️ Backend TTS API error:', ttsResponse.status);
-      fallbackToSystemSpeech(text, detectedLang);
-    }
-
-  } catch (err) {
-    console.warn('⚠️ Backend TTS error:', err);
-    fallbackToSystemSpeech(text, 'en');
-  }
-};
-
-/**
- * Fallback to system Web Speech API when backend TTS is not available
- */
-const fallbackToSystemSpeech = (text, langCode) => {
-  try {
-    if (window.speechSynthesis) {
-      console.log(`🎤 [Fallback] Using system Web Speech API`);
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.lang = langCode;
-      utterance.rate = 0.9;
-      utterance.pitch = 1.0;
-      utterance.volume = 1.0;
-
-      const voices = window.speechSynthesis.getVoices();
-      const matchingVoice = voices.find(voice => voice.lang.startsWith(langCode.split('-')[0]));
-
-      if (matchingVoice) {
-        utterance.voice = matchingVoice;
-        console.log(`✅ Using voice: ${matchingVoice.name}`);
-      }
-
-      window.speechSynthesis.speak(utterance);
-    }
-  } catch (fallbackErr) {
-    console.warn('⚠️ Fallback speech synthesis also failed:', fallbackErr);
-  }
-};
-
-/**
- * Download image from chat
- */
-const downloadImage = (imageData, imageName = 'generated-image') => {
-  try {
-    // Convert base64 data URL to blob
-    const link = document.createElement('a');
-    link.href = imageData;
-    link.download = `${imageName}.png`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    console.log('✅ Image downloaded successfully');
-  } catch (err) {
-    console.error('❌ Download error:', err);
-    alert('Failed to download image');
-  }
-};
-
-/**
- * Dual-Storage Helper: Try Firebase first, fallback to MongoDB
- * Attempts to save data to Firebase, and falls back to MongoDB if Firebase fails
- */
-const saveMessageDualStorage = async (userId, chatId, messageData) => {
-  // Check if message contains large image (Firebase has 1MB limit)
-  const hasLargeImage = messageData.attachment?.isImage && 
-                        messageData.attachment?.data && 
-                        messageData.attachment.data.length > 500000; // 500KB threshold
-  
-  // For large images, use MongoDB directly (Firebase has 1MB document limit)
-  if (hasLargeImage) {
-    console.log(`📦 Large image detected (${(messageData.attachment.data.length / 1024).toFixed(0)}KB), saving to MongoDB...`);
-    try {
-      // Convert Firebase serverTimestamp() to regular timestamp for MongoDB
-      const mongoMessageData = {
-        ...messageData,
-        timestamp: { seconds: Math.floor(Date.now() / 1000), nanoseconds: 0 }
-      };
-      
-      const response = await fetch('http://localhost:5000/api/save-message', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          userId,
-          chatId,
-          messageData: mongoMessageData
-        })
-      });
-      
-      const result = await response.json();
-      if (result.success) {
-        console.log(`✅ Large image message saved to MongoDB (ID: ${result.messageId})`);
-        return { success: true, location: 'mongodb', messageId: result.messageId };
-      }
-    } catch (mongoError) {
-      console.error(`❌ MongoDB save failed: ${mongoError.message}`);
-      return { success: false, location: 'none', error: mongoError.message };
-    }
-  }
-  
-  // Try Firebase first (primary storage) for normal messages
-  try {
-    if (db) {
-      await addDoc(collection(db, "artifacts", appId, "users", userId, "chats", String(chatId), "messages"), messageData);
-      console.log(`✅ Message saved to Firebase`);
-      return { success: true, location: 'firebase' };
-    }
-  } catch (firebaseError) {
-    console.warn(`⚠️ Firebase save failed: ${firebaseError.message}, trying MongoDB...`);
-    
-    // Fallback to MongoDB
-    try {
-      const response = await fetch('http://localhost:5000/api/save-message', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          userId,
-          chatId,
-          messageData: messageData
-        })
-      });
-      
-      const result = await response.json();
-      if (result.success) {
-        console.log(`✅ Message saved to MongoDB (fallback) (ID: ${result.messageId})`);
-        return { success: true, location: 'mongodb', messageId: result.messageId };
-      }
-    } catch (mongoError) {
-      console.error(`❌ MongoDB fallback failed: ${mongoError.message}`);
-    }
-  }
-  
-  return { success: false, location: 'none' };
-};
-
-/**
- * Sync all Firebase data to MongoDB backup - IMPROVED VERSION
- * Collects all user data from Firebase and sends to MongoDB
- */
-const syncFirebaseToMongoDB = async (userId) => {
-  try {
-    console.log(`[Sync] Starting Firebase to MongoDB sync for user: ${userId}`);
-    
-    if (!db) {
-      return { success: false, message: 'Firebase not initialized' };
-    }
-    
-    const dataToSync = {
-      userId: userId,
-      messages: [],
-      user_profile: {},
-      emergency_contacts: []
-    };
-    
-    // 1. FETCH ALL MESSAGES
-    console.log('[Sync] Fetching all messages...');
-    try {
-      const chatsRef = collection(db, "artifacts", appId, "users", userId, "chats");
-      const chatsSnapshot = await new Promise((resolve) => {
-        const unsubscribe = onSnapshot(chatsRef, (snapshot) => {
-          resolve(snapshot);
-        });
-        setTimeout(() => unsubscribe(), 10000); // Wait max 10 seconds
-      });
-      
-      for (const chatDoc of chatsSnapshot.docs) {
-        const chatId = chatDoc.id;
-        const messagesRef = collection(chatDoc.ref, "messages");
-        
-        const messagesSnapshot = await new Promise((resolve) => {
-          const unsubscribe = onSnapshot(messagesRef, (snapshot) => {
-            resolve(snapshot);
+  return (
+    <div style={{
+      display: 'flex',
+      flexDirection: 'column',
+      gap: '0.5rem',
+      padding: '0.5rem',
+      background: 'rgba(16, 185, 129, 0.1)',
+      border: '1px solid rgba(16, 185, 129, 0.3)',
+      borderRadius: '8px',
+      marginBottom: '0.5rem'
+    }}>
+      <img 
+        src={imageSrc} 
+        alt={imageRef.prompt || 'Generated Image'}
+        style={{
+          width: '100%',
+          maxWidth: '300px',
+          borderRadius: '8px',
+          objectFit: 'cover',
+          boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+          cursor: 'pointer'
+        }}
+        onClick={downloadImage}
+        title="Click to download"
+        onError={(e) => {
+          console.error('Generated image failed to load:', {
+            prompt: imageRef.prompt,
+            hasFullImage: !!imageRef.fullImage,
+            mongoOnly: imageRef.mongoOnly,
+            id: imageRef.id,
+            srcLength: imageSrc?.length
           });
-          setTimeout(() => unsubscribe(), 5000);
-        });
-        
-        messagesSnapshot.docs.forEach(msgDoc => {
-          dataToSync.messages.push({
-            id: msgDoc.id,
-            firebaseId: msgDoc.id,
-            chatId: chatId,
-            ...msgDoc.data()
-          });
-        });
-      }
-      console.log(`[Sync] ✅ Fetched ${dataToSync.messages.length} messages`);
-    } catch (e) {
-      console.warn('[Sync] Could not fetch messages:', e.message);
-    }
-    
-    // 2. FETCH USER PROFILE
-    console.log('[Sync] Fetching user profile...');
-    try {
-      const userDocRef = doc(db, "artifacts", appId, "users", userId);
-      const userSnapshot = await new Promise((resolve) => {
-        const unsubscribe = onSnapshot(userDocRef, (snapshot) => {
-          resolve(snapshot);
-        });
-        setTimeout(() => unsubscribe(), 5000);
-      });
-      
-      if (userSnapshot.exists()) {
-        dataToSync.user_profile = {
-          uid: userId,
-          firebaseId: userId,
-          ...userSnapshot.data()
-        };
-        console.log(`[Sync] ✅ Fetched user profile: ${dataToSync.user_profile.displayName || userId}`);
-      }
-    } catch (e) {
-      console.warn('[Sync] Could not fetch user profile:', e.message);
-    }
-    
-    // 3. FETCH EMERGENCY CONTACTS
-    console.log('[Sync] Fetching emergency contacts...');
-    try {
-      const contactsRef = collection(db, "artifacts", appId, "users", userId, "emergencyContacts");
-      const contactsSnapshot = await new Promise((resolve) => {
-        const unsubscribe = onSnapshot(contactsRef, (snapshot) => {
-          resolve(snapshot);
-        });
-        setTimeout(() => unsubscribe(), 5000);
-      });
-      
-      contactsSnapshot.docs.forEach(contactDoc => {
-        dataToSync.emergency_contacts.push({
-          id: contactDoc.id,
-          firebaseId: contactDoc.id,
-          ...contactDoc.data()
-        });
-      });
-      console.log(`[Sync] ✅ Fetched ${dataToSync.emergency_contacts.length} emergency contacts`);
-    } catch (e) {
-      console.warn('[Sync] Could not fetch emergency contacts:', e.message);
-    }
-    
-    // 4. SEND TO BACKEND FOR MONGODB STORAGE
-    console.log('[Sync] Sending data to MongoDB...');
-    const response = await fetch('http://localhost:5000/api/sync-user-data', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(dataToSync)
-    });
-    
-    const result = await response.json();
-    
-    if (result.success) {
-      console.log(`✅ SYNC COMPLETE! Synced ${result.synced} total records to MongoDB`);
-      console.log(`   - Messages: ${result.details?.messages || 0}`);
-      console.log(`   - User profile: ${result.details?.users || 0}`);
-      console.log(`   - Emergency contacts: ${result.details?.contacts || 0}`);
-      
-      return {
-        success: true,
-        message: `✅ Successfully synced ${result.synced} records from Firebase to MongoDB!\n\nDetails:\n- Messages: ${result.details?.messages || 0}\n- User profile: ${result.details?.users || 0}\n- Emergency contacts: ${result.details?.contacts || 0}`,
-        synced: result.synced,
-        details: result.details
-      };
-    } else {
-      console.error(`❌ Sync failed: ${result.message}`);
-      return {
-        success: false,
-        message: result.message || 'Sync failed'
-      };
-    }
-  } catch (error) {
-    console.error('[Sync Error]', error);
-    return {
-      success: false,
-      message: `Sync error: ${error.message}`
-    };
-  }
-};
-
-/**
- * Get sync status between Firebase and MongoDB
- */
-const getSyncStatus = async () => {
-  try {
-    const response = await fetch('http://localhost:5000/api/sync-status');
-    const result = await response.json();
-    return result;
-  } catch (error) {
-    console.error('[Sync Status Error]', error);
-    return {
-      firebase_available: false,
-      mongodb_available: false,
-      error: error.message
-    };
-  }
-};
-
-/**
- * Generate image from text prompt via Python backend (avoids CORS issues)
- */
-const generateImage = async (prompt) => {
-  if (!prompt || !prompt.trim()) {
-    console.warn('⚠️ No image prompt provided');
-    throw new Error('No prompt provided');
-  }
-
-  try {
-    console.log(`[Image Gen] Starting generation via backend...`);
-    console.log(`[Image Gen] Prompt: "${prompt.substring(0, 100)}..."`);
-    
-    const startTime = Date.now();
-    
-    // Call Python backend which will proxy to Hugging Face
-    const response = await fetch('http://localhost:5000/api/generate-image', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ prompt }),
-    });
-    
-    console.log(`[Image Gen] Backend response status: ${response.status}`);
-    
-    const result = await response.json();
-    console.log(`[Image Gen] Backend result:`, result);
-    
-    if (!response.ok) {
-      console.error(`[Image Gen] Backend error:`, result);
-      throw new Error(result.error || `Backend returned ${response.status}`);
-    }
-
-    if (!result.success) {
-      throw new Error(result.error || 'Generation failed');
-    }
-    
-    if (!result.image) {
-      console.error(`[Image Gen] No image in response:`, result);
-      throw new Error('No image data in response');
-    }
-
-    console.log(`✅ [Image Gen] SUCCESS! Total time: ${(Date.now() - startTime) / 1000}s`);
-    console.log(`[Image Gen] Image size: ${(result.size / 1024).toFixed(2)} KB`);
-    
-    return result.image;
-
-  } catch (err) {
-    console.error('❌ [Image Gen] FAILED:', err);
-    console.error('Error details:', {
-      message: err.message,
-      stack: err.stack,
-      name: err.name
-    });
-    throw new Error(err.message || 'Failed to generate image');
-  }
-};
-
-/**
- * Detect if user is asking for image generation
- * Patterns: "generate image", "create image", "draw", "sketch", "image of", "picture of", etc.
- */
-const detectImageGenerationRequest = (text) => {
-  const patterns = [
-    /generate\s+(?:an?\s+)?image/i,
-    /create\s+(?:an?\s+)?image/i,
-    /draw\s+(?:an?\s+)?image/i,
-    /make\s+(?:an?\s+)?image/i,
-    /sketch\s+(?:an?\s+)?image/i,
-    /picture\s+of/i,
-    /image\s+of/i,
-    /visual\s+of/i,
-    /show\s+me\s+(?:an?\s+)?image/i,
-    /show\s+me\s+(?:a\s+)?picture/i,
-  ];
-
-  for (const pattern of patterns) {
-    if (pattern.test(text)) {
-      // Extract the subject (what to draw)
-      // e.g., "generate image of banana" -> "banana"
-      const match = text.match(/(?:of|for|:)\s+(.+?)$/i) || 
-                    text.match(/image\s+(?:of\s+)?(.+?)$/i) ||
-                    text.match(/picture\s+(?:of\s+)?(.+?)$/i) ||
-                    text.match(/draw[^:]*:?\s+(.+?)$/i);
-      
-      if (match && match[1]) {
-        return match[1].trim();
-      }
-      // If no subject found, use the whole text minus the command
-      return text.replace(pattern, '').trim();
-    }
-  }
-
-  return null;
+          setError('Image failed to render');
+        }}
+      />
+      <button
+        onClick={downloadImage}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '0.5rem',
+          padding: '0.5rem 1rem',
+          background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+          color: 'white',
+          border: 'none',
+          borderRadius: '8px',
+          cursor: 'pointer',
+          fontSize: '0.875rem',
+          fontWeight: '600',
+          transition: 'transform 0.2s, opacity 0.2s'
+        }}
+        onMouseEnter={(e) => e.target.style.transform = 'scale(1.05)'}
+        onMouseLeave={(e) => e.target.style.transform = 'scale(1)'}
+      >
+        ⬇️ Download
+      </button>
+      {imageRef.isThumbnail && (
+        <span style={{ fontSize: '0.75rem', color: '#f59e0b', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+          ⚠️ Thumbnail version
+        </span>
+      )}
+    </div>
+  );
 };
 
 const App = () => {
@@ -729,7 +292,6 @@ const App = () => {
   const [currentSign, setCurrentSign] = useState("");
   const [isThinking, setIsThinking] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-  const [preferredResponseLanguage, setPreferredResponseLanguage] = useState('en'); // Track user's preferred response language
   const [showGesturePanel, setShowGesturePanel] = useState(false);
   const [showFileUploadPanel, setShowFileUploadPanel] = useState(false);
   const [currentFileAttachment, setCurrentFileAttachment] = useState(null); // Store current file attachment
@@ -747,13 +309,6 @@ const App = () => {
   
   // Emergency SOS System
   const [emergencyContacts, setEmergencyContacts] = useState([]);
-  
-  // Image Preview Modal
-  const [imagePreviewModal, setImagePreviewModal] = useState({
-    isOpen: false,
-    imageData: null,
-    imageName: null
-  });
   
   // Multi-Chat Management with localStorage persistence
   const [chats, setChats] = useState(() => {
@@ -794,60 +349,6 @@ const App = () => {
   const [showTranslator, setShowTranslator] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
   
-  // Engagement Features State
-  // 1. Streak & Achievements
-  const [userStats, setUserStats] = useState(() => {
-    const saved = localStorage.getItem('accessai_userStats');
-    return saved ? JSON.parse(saved) : {
-      currentStreak: 0,
-      lastChatDate: null,
-      totalChatsCount: 0,
-      achievements: [],
-      totalMessagesCount: 0,
-      topicsExplored: []
-    };
-  });
-  
-  // 2. Suggestions - Store per message
-  const [messageSuggestions, setMessageSuggestions] = useState({});
-  const [loadingSuggestions, setLoadingSuggestions] = useState({});
-  
-  // 3. YouTube Videos - Store per message
-  const [messageYoutubeResults, setMessageYoutubeResults] = useState({});
-  const [loadingYoutube, setLoadingYoutube] = useState({});
-  
-  // 4. Action Buttons (Expanded Message View)
-  const [expandedMessage, setExpandedMessage] = useState(null);
-  
-  // ========== NEW FEATURES ==========
-  
-  // Feature 4: Message Editing
-  const [editingMessageId, setEditingMessageId] = useState(null);
-  const [editingText, setEditingText] = useState('');
-  
-  // Feature 5: Quick Chat Templates
-  const [showTemplates, setShowTemplates] = useState(false);
-  const chatTemplates = [
-    { id: 1, label: '📚 Learn Something New', text: 'Teach me about ' },
-    { id: 2, label: '🏆 Help with Homework', text: 'Can you help me with this: ' },
-    { id: 3, label: '💭 Brainstorm Ideas', text: 'Help me brainstorm ideas for: ' },
-    { id: 4, label: '🐛 Fix a Bug', text: 'I have a bug in my code: ' },
-    { id: 5, label: '📝 Write Content', text: 'Write a ' },
-    { id: 6, label: '❓ Ask a Question', text: 'I have a question about: ' }
-  ];
-  
-  // Feature 9: Keyboard Shortcuts
-  const [showSearch, setShowSearch] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [searchResults, setSearchResults] = useState([]);
-  
-  // Feature 10: Voice Commands
-  const [isListeningCommands, setIsListeningCommands] = useState(false);  // For voice commands only
-  const [voiceText, setVoiceText] = useState('');
-  const [isVoiceCommandMode, setIsVoiceCommandMode] = useState(false);  // JARVIS-like mode - voice controls everything
-  // Legacy fallback state for compatibility
-  const isListening = isListeningCommands;
-  
   // Performance Metrics
   const [performanceMetrics, setPerformanceMetrics] = useState({
     fps: 0,
@@ -861,17 +362,12 @@ const App = () => {
   const frameCountRef = useRef(0);
   const lastFrameTimeRef = useRef(Date.now());
   const fpsRef = useRef(0);
-  const previousChatIdRef = useRef(null); // Track previous chat to detect changes
-
+  
   const videoRef = useRef(null);
   const chatEndRef = useRef(null);
   const canvasRef = useRef(null);
-  const commandRecognitionRef = useRef(null);  // Separate ref for voice commands
-  const voiceInputRef = useRef(null);  // Separate ref for voice input/dictation
+  const recognitionRef = useRef(null);
   const mediaStreamRef = useRef(null);
-  const voiceCommandModeRef = useRef(false);  // Track JARVIS mode for event handlers
-  // Legacy fallback (for compatibility)
-  const recognitionRef = commandRecognitionRef;
 
   // Chat Management Functions
   const getCurrentChat = () => chats.find(chat => chat.id === currentChatId);
@@ -927,585 +423,6 @@ const App = () => {
     ));
   };
 
-  // ========== ENGAGEMENT FEATURES HELPER FUNCTIONS ==========
-  
-  // 1. Streak Management
-  const updateStreak = () => {
-    const today = new Date().toDateString();
-    const lastDate = userStats.lastChatDate?.toString?.() || userStats.lastChatDate;
-    const lastDateTime = lastDate ? new Date(lastDate).toDateString() : null;
-    
-    let newStreak = userStats.currentStreak || 0;
-    
-    if (lastDateTime !== today) {
-      const yesterday = new Date();
-      yesterday.setDate(yesterday.getDate() - 1);
-      if (lastDateTime === yesterday.toDateString()) {
-        newStreak += 1;
-      } else if (lastDateTime !== today) {
-        newStreak = 1;
-      }
-    }
-    
-    const updatedStats = {
-      ...userStats,
-      currentStreak: newStreak,
-      lastChatDate: new Date(),
-      totalMessagesCount: (userStats.totalMessagesCount || 0) + 1,
-      totalChatsCount: (userStats.totalChatsCount || 0) + 1
-    };
-    
-    setUserStats(updatedStats);
-    localStorage.setItem('accessai_userStats', JSON.stringify(updatedStats));
-    return newStreak;
-  };
-  
-  // 2. Achievements/Badges
-  const checkAndAddAchievements = (topic) => {
-    const newAchievements = [...(userStats.achievements || [])];
-    const topicsExplored = new Set(userStats.topicsExplored || []);
-    
-    topicsExplored.add(topic);
-    
-    // Achievement logic
-    const achievementMap = {
-      'First Message': userStats.totalMessagesCount === 1,
-      'Chatty': (userStats.totalMessagesCount || 0) >= 10,
-      'Conversationalist': (userStats.totalMessagesCount || 0) >= 50,
-      'ChatMaster': (userStats.totalMessagesCount || 0) >= 100,
-      'Week Streak': (userStats.currentStreak || 0) >= 7,
-      'Month Streak': (userStats.currentStreak || 0) >= 30,
-      'Knowledge Explorer': topicsExplored.size >= 5
-    };
-    
-    Object.entries(achievementMap).forEach(([badge, condition]) => {
-      if (condition && !newAchievements.includes(badge)) {
-        newAchievements.push(badge);
-      }
-    });
-    
-    const updatedStats = {
-      ...userStats,
-      achievements: newAchievements,
-      topicsExplored: Array.from(topicsExplored)
-    };
-    
-    setUserStats(updatedStats);
-    localStorage.setItem('accessai_userStats', JSON.stringify(updatedStats));
-  };
-  
-  // 3. Generate Suggestions
-  const generateSuggestions = async (botMessage, messageId) => {
-    if (!messageId) return;
-    
-    try {
-      setLoadingSuggestions(prev => ({ ...prev, [messageId]: true }));
-      const response = await fetch(`${import.meta.env.VITE_FLASK_API_URL || 'http://localhost:5000'}/api/generate-suggestions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ botMessage })
-      });
-      
-      if (response.ok) {
-        const data = await response.json();
-        setMessageSuggestions(prev => ({ 
-          ...prev, 
-          [messageId]: data.suggestions || [] 
-        }));
-      }
-    } catch (err) {
-      console.error('Error generating suggestions:', err);
-    } finally {
-      setLoadingSuggestions(prev => ({ ...prev, [messageId]: false }));
-    }
-  };
-  
-  // 4. YouTube Search
-  const searchYoutube = async (query, messageId) => {
-    if (!messageId) return;
-    
-    try {
-      setLoadingYoutube(prev => ({ ...prev, [messageId]: true }));
-      const response = await fetch(`${import.meta.env.VITE_FLASK_API_URL || 'http://localhost:5000'}/api/youtube-search`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query })
-      });
-      
-      if (response.ok) {
-        const data = await response.json();
-        setMessageYoutubeResults(prev => ({ 
-          ...prev, 
-          [messageId]: data.videos || [] 
-        }));
-      }
-    } catch (err) {
-      console.error('Error searching YouTube:', err);
-    } finally {
-      setLoadingYoutube(prev => ({ ...prev, [messageId]: false }));
-    }
-  };
-  
-  // ========== NEW FEATURE FUNCTIONS ==========
-  
-  // Feature 4: Message Editing
-  const editMessage = (messageId, newText) => {
-    // Remove the old user message and any bot response that followed it
-    const messageIdx = messages.findIndex(m => m.id === messageId || messages.indexOf(m) === messageId);
-    
-    let filteredMessages = [...messages];
-    
-    if (messageIdx >= 0) {
-      // Remove the user message
-      filteredMessages.splice(messageIdx, 1);
-      
-      // If the next message is a bot response, remove it too
-      if (messageIdx < filteredMessages.length && filteredMessages[messageIdx]?.sender === 'bot') {
-        filteredMessages.splice(messageIdx, 1);
-      }
-    }
-    
-    // Update messages list (removes old message and bot response)
-    updateCurrentChatMessages(filteredMessages);
-    
-    // Close editing mode
-    setEditingMessageId(null);
-    setEditingText('');
-    
-    // Clear input and automatically send the edited message
-    setInputText("");
-    setIsThinking(true);
-    
-    // Call handleSend with the new edited text after state updates
-    setTimeout(() => {
-      handleSend(newText);
-    }, 0);
-  };
-  
-  // Feature: Delete Specific Conversation (User Message + Bot Response)
-  const deleteConversation = (messageId) => {
-    try {
-      // Find message by ID or by index
-      const messageIdx = messages.findIndex((m, idx) => m.id === messageId || idx === messageId);
-      
-      if (messageIdx < 0) {
-        console.warn('Message not found:', messageId);
-        return;
-      }
-      
-      const message = messages[messageIdx];
-      if (message.sender !== 'user') {
-        console.warn('Can only delete user messages');
-        return;
-      }
-      
-      let messagesToDelete = [messageIdx];
-      
-      // If next message is bot response, mark it for deletion too
-      if (messageIdx + 1 < messages.length && messages[messageIdx + 1].sender === 'bot') {
-        messagesToDelete.push(messageIdx + 1);
-      }
-      
-      // Remove messages in reverse order to avoid index issues
-      let updatedMessages = messages.filter((_, idx) => !messagesToDelete.includes(idx));
-      
-      // Ensure all remaining messages have unique IDs
-      updatedMessages = updatedMessages.map((msg, idx) => {
-        if (!msg.id) {
-          return { ...msg, id: `msg-${Date.now()}-${idx}` };
-        }
-        return msg;
-      });
-      
-      // Update local state FIRST
-      setMessages(updatedMessages);
-      setChats(chats.map(chat => 
-        chat.id === currentChatId ? { ...chat, messages: updatedMessages } : chat
-      ));
-      
-      console.log(`🗑️ Deleted conversation pair (${messagesToDelete.length} messages removed)`);
-      
-      // Update Firebase if configured (non-blocking)
-      if (user && db && isFirebaseConfigured && currentChatId) {
-        // Validate parameters are strings
-        const uid = typeof user.uid === 'string' ? user.uid : String(user.uid);
-        const chatId = typeof currentChatId === 'string' ? currentChatId : String(currentChatId);
-        
-        if (uid && chatId) {
-          try {
-            const chatRef = doc(db, 'users', uid, 'chats', chatId);
-            updateDoc(chatRef, {
-              messages: updatedMessages,
-              updatedAt: serverTimestamp()
-            }).then(() => {
-              console.log('✅ Firebase deletion synced');
-            }).catch(err => {
-              if (err.code === 'permission-denied') {
-                console.warn('⚠️ Firebase permission denied - local deletion saved');
-              } else {
-                console.error('Firebase sync error (local deletion preserved):', err.code);
-              }
-            });
-          } catch (firebaseErr) {
-            console.warn('⚠️ Firebase not available - local deletion saved');
-          }
-        }
-      }
-    } catch (error) {
-      console.error('Error deleting message:', error);
-    }
-  };
-  
-  // Feature 5: Smart Template Insertion
-  const insertTemplate = (template) => {
-    setInputText(template.text);
-    setShowTemplates(false);
-  };
-  
-  // Feature 9: Message Search
-  const searchMessages = (query) => {
-    if (!query.trim()) {
-      setSearchResults([]);
-      return;
-    }
-    
-    const results = messages.filter(m =>
-      m.text.toLowerCase().includes(query.toLowerCase())
-    );
-    
-    setSearchResults(results);
-  };
-  
-  // Feature 10: Voice Commands Setup
-  useEffect(() => {
-    // Keep voice command mode ref in sync with state
-    voiceCommandModeRef.current = isVoiceCommandMode;
-  }, [isVoiceCommandMode]);
-  
-  useEffect(() => {
-    // Check browser support
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition || window.mozSpeechRecognition || window.msSpeechRecognition;
-    
-    if (!SpeechRecognition) {
-      console.warn('Speech Recognition API not supported in this browser');
-      return;
-    }
-    
-    if (commandRecognitionRef.current) return; // Already initialized
-    
-    try {
-      const recognition = new SpeechRecognition();
-      recognition.continuous = false;
-      recognition.interimResults = true;
-      recognition.lang = 'en-US';
-      
-      recognition.onstart = () => {
-        console.log('🎙️ Voice commands listening started...');
-        setIsListeningCommands(true);
-      };
-      
-      recognition.onend = () => {
-        console.log('🎙️ Voice commands listening ended');
-        // If JARVIS mode is still active, restart listening for next command
-        if (isVoiceCommandMode) {
-          console.log('🔄 Restarting JARVIS listening...');
-          try {
-            setTimeout(() => {
-              if (commandRecognitionRef.current && isVoiceCommandMode) {
-                commandRecognitionRef.current.start();
-              }
-            }, 100);
-          } catch (err) {
-            console.error('Failed to restart listening:', err);
-            setIsListeningCommands(false);
-          }
-        } else {
-          setIsListeningCommands(false);
-        }
-      };
-      
-      recognition.onresult = (event) => {
-        let interim = '';
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          const transcript = event.results[i][0].transcript;
-          if (event.results[i].isFinal) {
-            processVoiceCommand(transcript.toLowerCase());
-          } else {
-            interim += transcript;
-          }
-        }
-        if (interim) setVoiceText(interim);
-      };
-      
-      recognition.onerror = (event) => {
-        console.error('🎙️ Voice commands error:', event.error);
-        setIsListeningCommands(false);
-        setVoiceText('');
-      };
-      
-      commandRecognitionRef.current = recognition;
-      console.log('✅ Voice commands initialized successfully');
-    } catch (error) {
-      console.error('Failed to initialize Voice Commands:', error);
-    }
-  }, []);
-
-  // Feature 10B: Initialize Voice Input (Separate from Commands)
-  useEffect(() => {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition || window.mozSpeechRecognition || window.msSpeechRecognition;
-    
-    if (!SpeechRecognition) {
-      console.warn('Speech Recognition API not supported in this browser');
-      return;
-    }
-    
-    if (voiceInputRef.current) return; // Already initialized
-    
-    try {
-      const recognition = new SpeechRecognition();
-      recognition.continuous = false;
-      recognition.interimResults = true;
-      recognition.lang = 'en-US';
-      
-      recognition.onstart = () => {
-        console.log('🎤 Voice input started...');
-      };
-      
-      recognition.onend = () => {
-        console.log('🎤 Voice input ended');
-      };
-      
-      recognition.onresult = (event) => {
-        let interim = '';
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          const transcript = event.results[i][0].transcript;
-          if (event.results[i].isFinal) {
-            // Add final transcript to input field
-            setInputText(prev => prev + (prev ? ' ' : '') + transcript);
-          } else {
-            interim += transcript;
-          }
-        }
-        // Show interim results as you speak
-        if (interim) setVoiceText(interim);
-      };
-      
-      recognition.onerror = (event) => {
-        console.error('🎤 Voice input error:', event.error);
-        setVoiceText('');
-      };
-      
-      voiceInputRef.current = recognition;
-      console.log('✅ Voice input (dictation) initialized successfully');
-    } catch (error) {
-      console.error('Failed to initialize Voice Input:', error);
-    }
-  }, []);
-  
-  // Feature 10: Process Voice Commands - JARVIS-like voice control with wake word
-  const processVoiceCommand = (command) => {
-    const cleanCommand = command.trim().toLowerCase();
-    console.log('🎙️ Recognized command:', cleanCommand);
-    
-    // CHECK FOR WAKE WORD "HEY JARVIS" / "JARVIS"
-    if (cleanCommand.includes('hey jarvis') || cleanCommand.includes('jarvis')) {
-      console.log('🤖 WAKE WORD DETECTED! Activating JARVIS mode...');
-      setIsVoiceCommandMode(true);
-      setIsListeningCommands(true);
-      setVoiceText('🤖 Ready!');
-      setTimeout(() => setVoiceText(''), 2000);
-      return;
-    }
-    
-    // Only process commands if in JARVIS mode
-    if (!isVoiceCommandMode) {
-      return; // Wait for wake word
-    }
-    
-    setVoiceText('');
-    
-    if (!cleanCommand) return;
-    
-    // SEND MESSAGE - Extract message content before "send"
-    if (cleanCommand.includes('send') || cleanCommand.includes('submit')) {
-      console.log('📤 Sending message via voice');
-      
-      // Extract message by removing "send" or "submit" keywords
-      let messageContent = cleanCommand
-        .replace(/\bsend\b/gi, '')
-        .replace(/\bsubmit\b/gi, '')
-        .trim();
-      
-      // If voice detected a message, send it
-      if (messageContent) {
-        console.log('🎤 Voice message:', messageContent);
-        handleSend(messageContent); // Pass message text directly
-      } else if (inputText.trim()) {
-        // If no message from voice but input has text, just send it
-        console.log('📤 Sending existing input');
-        handleSend(inputText);
-      } else {
-        // No message to send
-        console.warn('⚠️ No message to send');
-        setVoiceText('❌ Say something before "send"');
-        setTimeout(() => setVoiceText(''), 3000);
-      }
-      return;
-    } 
-    
-    // NEW CHAT
-    if (cleanCommand.includes('new chat') || cleanCommand.includes('create') || cleanCommand.includes('new conversation')) {
-      console.log('🆕 Creating new chat');
-      createNewChat();
-      return;
-    } 
-    
-    // DELETE CHAT
-    if (cleanCommand.includes('delete chat') || cleanCommand.includes('remove chat')) {
-      console.log('🗑️ Deleting current chat');
-      if (chats.length > 0) {
-        const newChats = chats.filter(c => c.id !== currentChatId);
-        setChats(newChats);
-        if (newChats.length > 0) setCurrentChatId(newChats[0].id);
-      }
-      return;
-    }
-    
-    // CLEAR CHAT
-    if (cleanCommand.includes('clear') || cleanCommand.includes('clear messages')) {
-      console.log('🧹 Clearing chat history');
-      setMessages([]);
-      return;
-    }
-    
-    // SEARCH
-    if (cleanCommand.includes('search') || cleanCommand.includes('find')) {
-      console.log('🔍 Opening search');
-      setShowSearch(true);
-      return;
-    } 
-    
-    // SHOW TEMPLATES
-    if (cleanCommand.includes('template') || cleanCommand.includes('show template')) {
-      console.log('📋 Showing templates');
-      setShowTemplates(true);
-      return;
-    }
-    
-    // SHOW SETTINGS
-    if (cleanCommand.includes('settings') || cleanCommand.includes('preference')) {
-      console.log('⚙️ Opening settings');
-      setShowSettings(true);
-      return;
-    }
-    
-    // STOP/CLOSE/EXIT
-    if (cleanCommand.includes('stop') || cleanCommand.includes('close') || cleanCommand.includes('exit')) {
-      console.log('❌ Closing JARVIS');
-      setShowSearch(false);
-      setShowTemplates(false);
-      setIsVoiceCommandMode(false);
-      setIsListeningCommands(false);
-      if (commandRecognitionRef.current) {
-        commandRecognitionRef.current.stop();
-      }
-      return;
-    }
-    
-    // If no command matched and in voice mode, add to input
-    if (isVoiceCommandMode) {
-      console.log('📝 Adding speech to input:', cleanCommand);
-      setInputText(prev => prev + (prev ? ' ' : '') + cleanCommand);
-    }
-  };
-  
-  // Feature 10B: Toggle Voice Command Mode (JARVIS wake word listener)
-  const toggleVoiceCommandMode = () => {
-    if (!commandRecognitionRef.current) {
-      console.error('🎙️ Voice commands not initialized');
-      alert('Voice recognition is not available in your browser. Please use Chrome, Edge, or Safari.');
-      return;
-    }
-    
-    try {
-      if (isListeningCommands) {
-        // Stop listening for wake word
-        commandRecognitionRef.current.stop();
-        setIsListeningCommands(false);
-        setIsVoiceCommandMode(false);
-        voiceCommandModeRef.current = false; // Update ref
-        setVoiceText('');
-        console.log('🎙️ Stopped listening for wake word');
-      } else {
-        // Start listening for wake word "Hey Jarvis"
-        setVoiceText('🎤 Say "Hey Jarvis" to activate...');
-        commandRecognitionRef.current.start();
-        setIsListeningCommands(true);
-        console.log('🎙️ Listening for wake word "Hey Jarvis"... (like Alexa)');
-      }
-    } catch (error) {
-      console.error('Error toggling voice command mode:', error);
-    }
-  };
-  
-  // Feature 10: Toggle Voice Commands (Separate from Voice Input)
-  const toggleVoiceCommands = () => {
-    if (!commandRecognitionRef.current) {
-      console.error('🎙️ Voice commands not initialized');
-      alert('Voice recognition is not available in your browser. Please use Chrome, Edge, or Safari.');
-      return;
-    }
-    
-    try {
-      if (isListeningCommands) {
-        commandRecognitionRef.current.stop();
-        setIsListeningCommands(false);
-        setVoiceText('');
-      } else {
-        setVoiceText('');
-        commandRecognitionRef.current.start();
-        setIsListeningCommands(true);
-      }
-    } catch (error) {
-      console.error('Error toggling voice commands:', error);
-      setIsListeningCommands(false);
-    }
-  };
-  
-  // Feature 9: Keyboard Shortcuts
-  useEffect(() => {
-    const handleKeyDown = (e) => {
-      // Ctrl+K or Cmd+K: Open Search
-      if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
-        e.preventDefault();
-        setShowSearch(!showSearch);
-      }
-      
-      // Ctrl+Enter or Cmd+Enter: Send Message
-      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-        e.preventDefault();
-        if (inputText.trim()) handleSend();
-      }
-      
-      // Ctrl+Shift+N or Cmd+Shift+N: New Chat
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'N') {
-        e.preventDefault();
-        createNewChat();
-      }
-      
-      // Escape: Close all modals
-      if (e.key === 'Escape') {
-        setShowSearch(false);
-        setShowTemplates(false);
-        setImagePreviewModal({ ...imagePreviewModal, isOpen: false });
-        setExpandedMessage(null);
-      }
-    };
-    
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [inputText, showSearch, showTemplates, imagePreviewModal, expandedMessage]);
-  
   // Persist chats to localStorage
   useEffect(() => {
     try {
@@ -1532,6 +449,36 @@ const App = () => {
       console.error('Failed to save nextChatId to localStorage:', err);
     }
   }, [nextChatId]);
+
+  useEffect(() => {
+    // Initialize Web Speech API
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (SpeechRecognition) {
+      const recognition = new SpeechRecognition();
+      recognition.continuous = true;
+      recognition.interimResults = false;
+      recognition.lang = 'en-US';
+      
+      recognition.onresult = (event) => {
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          if (event.results[i].isFinal) {
+            const transcript = event.results[i][0].transcript;
+            setInputText(prev => prev + (prev ? ' ' : '') + transcript);
+          }
+        }
+      };
+      
+      recognitionRef.current = recognition;
+    }
+    // Hand detection is handled by Flask backend via GestureRecognition component
+    // No need to initialize local hand detector - using MediaPipe on server side
+
+    return () => {
+      if (recognitionRef.current) {
+        recognitionRef.current.stop();
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!isFirebaseConfigured || !auth) {
@@ -1821,214 +768,89 @@ const App = () => {
   }, [messages.length]);
 
   useEffect(() => {
-    if (!user || !isFirebaseConfigured || !db || !currentChatId) return;
-    
-    // Check if chat has changed (not just a reload)
-    const chatHasChanged = previousChatIdRef.current !== null && 
-                           previousChatIdRef.current !== currentChatId;
-    
-    // Only clear messages when switching to a different chat
-    if (chatHasChanged) {
-      setMessages([]);
-      console.log(`🔄 Switched from chat ${previousChatIdRef.current} to ${currentChatId}`);
+    if (!user || !isFirebaseConfigured || !db || !currentChatId) {
+      console.log("⏭️ Skipping Firestore listener:", { 
+        user: !!user, 
+        isFirebaseConfigured, 
+        db: !!db, 
+        currentChatId 
+      });
+      return;
     }
     
-    // Update previous chat ID
-    previousChatIdRef.current = currentChatId;
+    // Clear messages immediately when switching chats (before loading from Firestore)
+    setMessages([]);
     
-    // Track MongoDB messages separately to avoid race conditions
-    let mongoMessagesCache = [];
-    let isLoadingMongo = false;
-    let isInitialLoad = true;
-    let hasSetInitialMessages = false;
+    console.log(`📡 Setting up Firestore listener for chat ${currentChatId}`);
     
-    // Fetch MongoDB messages (for large images that can't fit in Firebase)
-    const fetchMongoMessages = async () => {
-      if (isLoadingMongo && !isInitialLoad) {
-        return mongoMessagesCache; // Return cache if already loading
-      }
-      
-      isLoadingMongo = true;
-      try {
-        const response = await fetch('http://localhost:5000/api/get-messages', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            userId: user.uid,
-            chatId: currentChatId
-          })
-        });
-        
-        if (response.ok) {
-          const result = await response.json();
-          if (result.success && result.messages) {
-            console.log(`📦 Fetched ${result.messages.length} messages from MongoDB`);
-            mongoMessagesCache = result.messages;
-            isLoadingMongo = false;
-            isInitialLoad = false;
-            return result.messages;
-          }
-        }
-      } catch (err) {
-        console.warn('MongoDB fetch failed:', err);
-      }
-      isLoadingMongo = false;
-      isInitialLoad = false;
-      return mongoMessagesCache;
-    };
-    
-    // Load MongoDB messages immediately on mount (only once)
-    const initializeMessages = async () => {
-      if (hasSetInitialMessages) return; // Prevent multiple initializations
-      
-      const mongoData = await fetchMongoMessages();
-      if (mongoData.length > 0) {
-        const mongoMessages = mongoData.map((m, idx) => {
-          let timestamp = m.timestamp || {};
-          if (!timestamp.seconds) {
-            timestamp = { seconds: Math.floor(Date.now() / 1000) - (mongoData.length - idx) * 60 };
-          }
-          
-          return {
-            ...m,
-            id: m._id || `mongo-${idx}`,
-            source: 'mongodb',
-            timestamp: timestamp
-          };
-        });
-        
-        // Set MongoDB messages immediately (only first time)
-        setMessages(mongoMessages);
-        hasSetInitialMessages = true;
-        console.log('✅ MongoDB messages loaded on mount');
-      } else {
-        // If no MongoDB messages, clear for fresh start
-        setMessages([]);
-        hasSetInitialMessages = true;
-      }
-    };
-    
-    // Start loading MongoDB messages immediately
-    initializeMessages();
-    
-    // Query messages for current chat only (ordered by timestamp)
+    // Query messages for current chat only
     try {
       const messagesRef = collection(db, "artifacts", appId, "users", user.uid, "chats", String(currentChatId), "messages");
-      const q = query(messagesRef, orderBy('timestamp', 'asc'));
+      const q = query(messagesRef);
       
-      const unsubscribe = onSnapshot(q, async (snap) => {
-        console.log(`📥 Firebase loaded ${snap.docs.length} messages`);
-        const firebaseData = snap.docs.map(d => ({ id: d.id, ...d.data(), source: 'firebase' }));
-        
-        // Merge with MongoDB messages (for large images)
-        const mongoData = await fetchMongoMessages();
-        const mongoMessages = mongoData.map((m, idx) => {
-          // Ensure timestamp has proper format
-          let timestamp = m.timestamp || {};
-          if (!timestamp.seconds) {
-            // If no seconds field, try to parse from other formats or use current time
-            timestamp = { seconds: Math.floor(Date.now() / 1000) - (mongoData.length - idx) * 60 }; // Stagger by minute
+      const unsubscribe = onSnapshot(q, (snap) => {
+        console.log(`📥 Received ${snap.docs.length} messages from Firestore`);
+        const data = snap.docs.map(d => {
+          const msgData = { id: d.id, ...d.data() };
+          
+          // Log attachment info if present
+          if (msgData.attachment) {
+            console.log(`📎 Message ${d.id} has attachment:`, {
+              name: msgData.attachment.name,
+              type: msgData.attachment.type,
+              isImage: msgData.attachment.isImage,
+              hasData: !!msgData.attachment.data,
+              dataLength: msgData.attachment.data?.length,
+              dataPrefix: msgData.attachment.data?.substring(0, 50)
+            });
           }
           
-          return {
-            ...m,
-            id: m._id || `mongo-${idx}`,
-            source: 'mongodb',
-            timestamp: timestamp
-          };
+          return msgData;
         });
         
-        // Merge Firebase and MongoDB messages properly
-        setMessages(prevMessages => {
-          // Combine all sources
-          const allMessages = [
-            ...firebaseData,
-            ...mongoMessages
-          ];
-          
-          // Deduplicate by ID (prefer Firebase source if duplicate)
-          const uniqueMessagesMap = new Map();
-          allMessages.forEach(msg => {
-            const existingMsg = uniqueMessagesMap.get(msg.id);
-            if (!existingMsg || msg.source === 'firebase') {
-              uniqueMessagesMap.set(msg.id, msg);
-            }
-          });
-          
-          const uniqueMessages = Array.from(uniqueMessagesMap.values());
-          
-          // Sort by timestamp
-          const sortedData = uniqueMessages.sort((a, b) => {
-            const aTime = a.timestamp?.seconds || a.timestamp?.toDate?.().getTime() / 1000 || 0;
-            const bTime = b.timestamp?.seconds || b.timestamp?.toDate?.().getTime() / 1000 || 0;
-            return aTime - bTime;
-          });
-          
-          console.log(`📊 Total messages after merge: ${sortedData.length} (${firebaseData.length} Firebase + ${mongoMessages.length} MongoDB)`);
-          return sortedData;
+        // Deduplicate messages by ID
+        const uniqueData = Array.from(
+          new Map(data.map(item => [item.id, item])).values()
+        );
+        
+        // Sort by timestamp
+        const sortedData = uniqueData.sort((a, b) => {
+          const aTime = a.timestamp?.seconds || 0;
+          const bTime = b.timestamp?.seconds || 0;
+          return aTime - bTime;
         });
+        
+        console.log(`✅ Displaying ${sortedData.length} unique messages`);
+        
+        setMessages(sortedData);
+        // Update chats with new messages
+        setChats(prev => prev.map(chat => 
+          chat.id === currentChatId ? { ...chat, messages: sortedData } : chat
+        ));
       }, (error) => {
-        console.warn("Firestore listener error (collection may not exist yet):", error);
+        console.warn("⚠️ Firestore listener error (collection may not exist yet):", error);
       });
       
       return unsubscribe;
     } catch (err) {
-      console.error("Firestore query error:", err);
+      console.error("❌ Firestore query error:", err);
     }
   }, [user, currentChatId, isFirebaseConfigured, db, appId]);
 
   useEffect(() => {
-    // Update current chat messages whenever messages state changes
-    if (messages.length > 0) {
-      updateCurrentChatMessages(messages);
-    }
-  }, [messages]);
-
-  useEffect(() => {
-    // Scroll to bottom with a small delay to ensure DOM is rendered
-    const scrollToBottom = () => {
-      setTimeout(() => {
-        chatEndRef.current?.scrollIntoView({ behavior: "auto" });
-      }, 0);
-    };
-    
-    scrollToBottom();
-  }, [messages, isThinking, currentChatId]);
-
-  // Handle keyboard shortcuts for image preview modal
-  useEffect(() => {
-    const handleKeyDown = (e) => {
-      if (e.key === 'Escape' && imagePreviewModal.isOpen) {
-        setImagePreviewModal({ isOpen: false, imageData: null, imageName: null });
-      }
-    };
-    
-    if (imagePreviewModal.isOpen) {
-      window.addEventListener('keydown', handleKeyDown);
-      return () => window.removeEventListener('keydown', handleKeyDown);
-    }
-  }, [imagePreviewModal.isOpen]);
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, isThinking]);
 
   const toggleVoiceRecording = () => {
-    if (!voiceInputRef.current) {
-      console.error('🎤 Voice input not initialized');
-      alert('Voice input is not available in your browser. Please use Chrome, Edge, or Safari.');
-      return;
-    }
-    
-    try {
+    if (recognitionRef.current) {
       if (isRecording) {
-        voiceInputRef.current.stop();
+        recognitionRef.current.stop();
         setIsRecording(false);
       } else {
         setTranscript('');
-        setVoiceText('');
-        voiceInputRef.current.start();
+        recognitionRef.current.start();
         setIsRecording(true);
       }
-    } catch (error) {
-      console.error('Error toggling voice input:', error);
-      setIsRecording(false);
     }
   };
 
@@ -2044,16 +866,49 @@ const App = () => {
       .trim();
   };
 
-  const fetchWithRetry = async (url, options, maxRetries = 5) => {
+  const fetchWithRetry = async (url, options, maxRetries = 3) => {
     for (let i = 0; i < maxRetries; i++) {
       try {
+        console.log(`🔄 Fetch attempt ${i + 1}/${maxRetries}`);
         const response = await fetch(url, options);
-        if (response.ok) return await response.json();
-        if (response.status !== 429 && response.status < 500) break; 
+        console.log(`📡 Response status: ${response.status}`);
+        
+        if (response.ok) {
+          const data = await response.json();
+          console.log("✅ Fetch successful");
+          return data;
+        }
+        
+        // Don't retry on 429 (rate limit/no credits) or other client errors
+        if (response.status === 429 || (response.status >= 400 && response.status < 500)) {
+          const errorText = await response.text();
+          console.error(`❌ HTTP ${response.status} error (no retry):`, errorText);
+          const error = new Error(`HTTP ${response.status}: ${errorText}`);
+          error.status = response.status;
+          throw error;
+        }
+        
+        // Only retry on 5xx server errors
+        console.warn(`⚠️ Server error (${response.status}), will retry...`);
       } catch (err) {
+        console.error(`❌ Fetch error on attempt ${i + 1}:`, err.message);
+        
+        // If error has a status code (HTTP error), throw immediately without retry
+        if (err.status) {
+          throw err;
+        }
+        
+        // If it's an abort error (timeout) and not the last retry, continue
+        if (err.name === 'AbortError' && i < maxRetries - 1) {
+          console.log('⏱️ Request timeout - retrying with longer timeout...');
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          continue;
+        }
+        
         if (i === maxRetries - 1) throw err;
       }
       const delay = Math.pow(2, i) * 1000;
+      console.log(`⏳ Waiting ${delay}ms before retry...`);
       await new Promise(resolve => setTimeout(resolve, delay));
     }
     throw new Error("Failed after multiple retries");
@@ -2082,103 +937,6 @@ const App = () => {
     const cleanText = sanitizeInput(typeof text === 'string' ? text.trim() : inputText.trim());
     if (!cleanText || !user) return;
 
-    // ✨ CHECK FOR IMAGE GENERATION REQUEST FIRST
-    const imagePrompt = detectImageGenerationRequest(cleanText);
-    if (imagePrompt) {
-      console.log(`🎨 Image generation request detected: "${imagePrompt}"`);
-      setInputText("");
-      setIsThinking(true);
-
-      let loadingMsgRef = null;
-      try {
-        // Save user message
-        const userMsgRef = await addDoc(collection(db, "artifacts", appId, "users", user.uid, "chats", String(currentChatId), "messages"), {
-          text: cleanText, 
-          sender: "user", 
-          timestamp: serverTimestamp()
-        });
-
-        // Add a loading message with animation
-        loadingMsgRef = await addDoc(collection(db, "artifacts", appId, "users", user.uid, "chats", String(currentChatId), "messages"), {
-          text: "🎨 Generating your image...",
-          sender: "bot",
-          timestamp: serverTimestamp(),
-          isGenerating: true
-        });
-
-        // Generate image
-        const imageData = await generateImage(imagePrompt);
-        
-        if (imageData) {
-          // Delete the loading message
-          try {
-            await deleteDoc(doc(db, "artifacts", appId, "users", user.uid, "chats", String(currentChatId), "messages", loadingMsgRef.id));
-          } catch (delErr) {
-            console.warn("Failed to delete loading message:", delErr);
-          }
-          
-          // Save bot message with image using dual-storage (Firebase + MongoDB fallback)
-          const messageData = {
-            text: `🎨 Here's your image: ${imagePrompt}`,
-            sender: "bot",
-            timestamp: serverTimestamp(),
-            attachment: {
-              name: `generated-${imagePrompt.slice(0, 20)}.png`,
-              type: "image/png",
-              isImage: true,
-              data: imageData
-            }
-          };
-          
-          const saveResult = await saveMessageDualStorage(user.uid, currentChatId, messageData);
-          console.log(`✅ Image message saved to ${saveResult.location}`);
-          
-          // Delete the loading message - this triggers onSnapshot which refetches MongoDB
-          // But we also add manually for instant feedback
-          if (saveResult.location === 'mongodb' && saveResult.messageId) {
-            const newMessage = {
-              id: saveResult.messageId,
-              _id: saveResult.messageId,
-              ...messageData,
-              timestamp: { seconds: Math.floor(Date.now() / 1000) },
-              source: 'mongodb'
-            };
-            setMessages(prev => {
-              // Check if not already present
-              if (!prev.some(m => m.id === saveResult.messageId)) {
-                return [...prev, newMessage];
-              }
-              return prev;
-            });
-            console.log(`✅ MongoDB message added to UI with ID: ${saveResult.messageId}`);
-          }
-        } else {
-          throw new Error("No image data returned from generation");
-        }
-      } catch (err) {
-        console.error("❌ Image generation error:", err);
-        
-        // Delete loading message if it exists
-        if (loadingMsgRef) {
-          try {
-            await deleteDoc(doc(db, "artifacts", appId, "users", user.uid, "chats", String(currentChatId), "messages", loadingMsgRef.id));
-          } catch (delErr) {
-            console.warn("Failed to delete loading message:", delErr);
-          }
-        }
-        
-        // Show error message
-        await addDoc(collection(db, "artifacts", appId, "users", user.uid, "chats", String(currentChatId), "messages"), {
-          text: `❌ Sorry, I couldn't generate the image. ${err.message || 'Please try again.'}`,
-          sender: "bot",
-          timestamp: serverTimestamp()
-        });
-      }
-      
-      setIsThinking(false);
-      return;
-    }
-
     // Play sign visualization for user's input
     playSignSequence(cleanText);
     
@@ -2186,86 +944,340 @@ const App = () => {
     setIsThinking(true);
 
     // Check if required services are configured
-    if (!isFirebaseConfigured || !db || !isGeminiConfigured) {
+    if (!isFirebaseConfigured || !db || !isAIConfigured) {
       setIsThinking(false);
-      const errorMsg = "⚠️ Configuration Required: Please set up Firebase and Gemini API credentials.";
-      console.warn("Configuration check failed:", { isFirebaseConfigured, db: !!db, isGeminiConfigured });
+      let errorMsg = "⚠️ Configuration Error:\n";
+      if (!isFirebaseConfigured) errorMsg += "- Firebase not configured\n";
+      if (!db) errorMsg += "- Firestore not initialized\n";
+      if (!isAIConfigured) errorMsg += "- No AI provider configured (need OpenAI or Hugging Face API key)\n";
+      errorMsg += "\nPlease check your .env file and restart the server.";
+      
+      console.error("Configuration check failed:", { 
+        isFirebaseConfigured, 
+        db: !!db, 
+        isAIConfigured,
+        isOpenAIConfigured,
+        isHFConfigured
+      });
+      
       try {
         if (isFirebaseConfigured && db) {
           await addDoc(collection(db, "artifacts", appId, "users", user.uid, "chats", String(currentChatId), "messages"), {
             text: errorMsg, sender: "bot", timestamp: serverTimestamp()
           });
+        } else {
+          alert(errorMsg);
         }
       } catch (err) {
         console.error("Failed to save error message:", err);
+        alert(errorMsg);
       }
       return;
     }
 
     try {
-      // Analyze user message with NLP (in background, don't await)
-      let nlpAnalysis = {};
-      NLPService.quickAnalysis(cleanText).then(analysis => {
-        nlpAnalysis = analysis;
-      }).catch(err => {
-        console.warn('NLP analysis failed:', err);
-      });
-
-      // Save user message with NLP data and file attachment (Firebase + MongoDB fallback)
-      console.log("Saving user message with dual-storage:", { currentChatId, cleanText });
+      // Check if this is an image generation request
+      if (HuggingFaceService.isImageGenerationRequest(cleanText)) {
+        console.log('🎨 Image generation request detected');
+        
+        // Determine which model to use (Z-Image or Stable Diffusion XL)
+        const useZImage = cleanText.toLowerCase().includes('z-image') || 
+                          cleanText.toLowerCase().includes('zimage') ||
+                          /chinese|中文|multilingual/i.test(cleanText);
+        
+        const modelName = useZImage ? 'Z-Image' : 'Stable Diffusion XL';
+        console.log(`🎨 Using model: ${modelName}`);
+        
+        // Check if Hugging Face is configured
+        if (!HuggingFaceService.isConfigured() && !useZImage) {
+          const errorMsg = "⚠️ Hugging Face not configured.\n\n📝 To enable image generation:\n1. Get API key from https://huggingface.co/settings/tokens\n2. Add to .env: VITE_HUGGINGFACE_API_KEY=your_key\n3. Restart the app";
+          
+          await addDoc(collection(db, "artifacts", appId, "users", user.uid, "chats", String(currentChatId), "messages"), {
+            text: errorMsg,
+            sender: "bot",
+            timestamp: serverTimestamp()
+          });
+          
+          setIsThinking(false);
+          return;
+        }
+        
+        // Extract prompt from user message
+        const prompt = HuggingFaceService.extractPrompt(cleanText);
+        console.log('🎨 Generating image for prompt:', prompt);
+        
+        // Save user message
+        await addDoc(collection(db, "artifacts", appId, "users", user.uid, "chats", String(currentChatId), "messages"), {
+          text: cleanText,
+          sender: "user",
+          timestamp: serverTimestamp()
+        });
+        
+        try {
+          // Generate image using selected model
+          console.log(`🚀 Starting ${modelName} image generation...`);
+          
+          let generation;
+          if (useZImage) {
+            // Use Z-Image model
+            generation = await ZImageService.generateImage(prompt, {
+              height: 1280,
+              width: 720,
+              steps: 50,
+              guidanceScale: 4.0
+            });
+            // Normalize response format
+            generation = {
+              image: generation.imageData,
+              prompt: generation.prompt,
+              model: generation.model,
+              size: generation.size
+            };
+          } else {
+            // Use Stable Diffusion XL
+            generation = await HuggingFaceService.generateImage(prompt);
+          }
+          
+          // Delete loading message
+          try {
+            await deleteDoc(loadingDocRef);
+          } catch (e) {
+            console.warn('Could not delete loading message:', e);
+          }
+          
+          // Validate that we have image data
+          if (!generation || !generation.image || typeof generation.image !== 'string') {
+            throw new Error('Invalid image data received from generator');
+          }
+          
+          console.log('📦 Image generated, size:', generation.image.length, 'bytes');
+          
+          // Validate that we have a proper data URL
+          let imageData = generation.image;
+          if (!imageData || !imageData.startsWith('data:image/')) {
+            throw new Error('Invalid image data format. Expected data URL.');
+          }
+          
+          console.log('✅ Valid data URL detected:', imageData.substring(0, 30) + '...');
+          
+          // Store in MongoDB instead of Firestore to avoid size limits
+          try {
+            const storeResponse = await fetch('http://localhost:3001/api/store-image', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                userId: user.uid,
+                chatId: String(currentChatId),
+                prompt: prompt,
+                imageData: imageData,
+                model: generation.model || 'huggingface'
+              })
+            });
+            
+            if (!storeResponse.ok) {
+              const errorText = await storeResponse.text();
+              console.error('MongoDB storage failed:', errorText);
+              throw new Error('Failed to store image in MongoDB');
+            }
+            
+            const storeResult = await storeResponse.json();
+            console.log('✅ Image stored in MongoDB:', storeResult.imageId);
+            
+            // Check if image is too large for Firestore (1MB limit)
+            const FIRESTORE_LIMIT = 1000000; // ~1MB in bytes
+            const shouldStoreInFirestore = imageData.length < FIRESTORE_LIMIT;
+            
+            if (!shouldStoreInFirestore) {
+              console.warn('⚠️ Image too large for Firestore, storing reference only');
+            }
+            
+            // Save message with image reference
+            const messageData = {
+              text: `✅ Image created successfully!\n\n🎨 Prompt: "${prompt}"\n💾 Stored in database\n📊 Size: ${Math.round(storeResult.size / 1024)} KB`,
+              sender: "bot",
+              timestamp: serverTimestamp(),
+              imageRef: {
+                id: storeResult.imageId,
+                prompt: prompt,
+                mongoOnly: !shouldStoreInFirestore
+              }
+            };
+            
+            // Only include fullImage if it fits in Firestore
+            if (shouldStoreInFirestore) {
+              messageData.imageRef.fullImage = imageData;
+              console.log('✅ Image included in Firestore (within size limit)');
+            } else {
+              console.log('📍 Image stored in MongoDB only, use imageRef.id to fetch');
+            }
+            
+            await addDoc(collection(db, "artifacts", appId, "users", user.uid, "chats", String(currentChatId), "messages"), messageData);
+            
+            console.log('✅ Image message saved');
+          } catch (storeError) {
+            console.error('Failed to store in MongoDB:', storeError);
+            
+            // Fallback: still display the image but warn about storage
+            await addDoc(collection(db, "artifacts", appId, "users", user.uid, "chats", String(currentChatId), "messages"), {
+              text: `✅ Image created!\n\n🎨 "${prompt}"\n⚠️ Could not store in database: ${storeError.message}`,
+              sender: "bot",
+              timestamp: serverTimestamp(),
+              imageRef: {
+                prompt: prompt,
+                fullImage: imageData, // Still use full valid data URL
+                isThumbnail: false
+              }
+            });
+          }
+        } catch (genError) {
+          console.error('❌ Image generation error:', genError);
+          
+          // Delete loading message if it exists
+          try {
+            if (loadingDocRef) {
+              await deleteDoc(loadingDocRef);
+            }
+          } catch (e) {
+            console.warn('Could not delete loading message:', e);
+          }
+          
+          let errorMessage = '❌ Failed to generate image.\n\n';
+          
+          if (genError.message.includes('Model is loading')) {
+            errorMessage += genError.message + '\n\n💡 The AI model needs to warm up. Please try again in a moment.';
+          } else if (genError.message.includes('not configured')) {
+            errorMessage += genError.message;
+          } else {
+            errorMessage += `Error: ${genError.message}\n\n💡 Try:\n• Simplifying your prompt\n• Using different words\n• Waiting a moment and trying again`;
+          }
+          
+          await addDoc(collection(db, "artifacts", appId, "users", user.uid, "chats", String(currentChatId), "messages"), {
+            text: errorMessage,
+            sender: "bot",
+            timestamp: serverTimestamp()
+          });
+        }
+        
+        setIsThinking(false);
+        return;
+      }
       
-      // Save clean message text for UI display (don't include extracted text)
+      // Analyze user message with NLP (in background, don't await)
+      let nlpAnalysis = null;
+      try {
+        nlpAnalysis = await NLPService.quickAnalysis(cleanText);
+        // Clean NLP analysis to ensure Firestore compatibility
+        if (nlpAnalysis && typeof nlpAnalysis === 'object') {
+          nlpAnalysis = JSON.parse(JSON.stringify(nlpAnalysis));
+        }
+      } catch (err) {
+        console.warn('NLP analysis failed:', err);
+        nlpAnalysis = null;
+      }
+
+      // Save user message with NLP data and file attachment
+      console.log("Saving user message to Firestore:", { currentChatId, cleanText });
       const messageData = {
         text: cleanText, 
         sender: "user", 
-        timestamp: serverTimestamp(),
-        nlp: nlpAnalysis
+        timestamp: serverTimestamp()
       };
       
-      // Add file attachment if present (include extracted text for future chat history)
+      // Only add nlp if it's valid
+      if (nlpAnalysis && Object.keys(nlpAnalysis).length > 0) {
+        messageData.nlp = nlpAnalysis;
+      }
+      
+      // Add file attachment if present
       if (currentFileAttachment) {
-        console.log('📎 Attaching file to message:', currentFileAttachment.name);
-        messageData.attachment = {
+        console.log('📎 Adding file attachment:', {
           name: currentFileAttachment.name,
           type: currentFileAttachment.type,
           isImage: currentFileAttachment.isImage,
-          data: currentFileAttachment.data,
-          ...(currentFileAttachment.extractedText && { extractedText: currentFileAttachment.extractedText })
-        };
+          dataLength: currentFileAttachment.data?.length,
+          dataPrefix: currentFileAttachment.data?.substring(0, 100)
+        });
+        
+        // Validate attachment fields are primitives
+        if (!currentFileAttachment.name || typeof currentFileAttachment.name !== 'string') {
+          console.error('Invalid attachment name');
+          throw new Error('Invalid file attachment: name must be a string');
+        }
+        if (!currentFileAttachment.type || typeof currentFileAttachment.type !== 'string') {
+          console.error('Invalid attachment type');
+          throw new Error('Invalid file attachment: type must be a string');
+        }
+        if (!currentFileAttachment.data || typeof currentFileAttachment.data !== 'string') {
+          console.error('Invalid attachment data');
+          throw new Error('Invalid file attachment: data must be a base64 string');
+        }
+        
+        // Create clean attachment with ONLY primitive types - use JSON parse/stringify for purity
+        const cleanAttachment = JSON.parse(JSON.stringify({
+          name: String(currentFileAttachment.name),
+          type: String(currentFileAttachment.type),
+          isImage: Boolean(currentFileAttachment.isImage === true),
+          data: String(currentFileAttachment.data)
+        }));
+        
+        // Final validation - ensure all values are primitives
+        for (const [key, value] of Object.entries(cleanAttachment)) {
+          const valueType = typeof value;
+          if (valueType !== 'string' && valueType !== 'boolean' && valueType !== 'number') {
+            console.error(`Invalid type for ${key}: ${valueType}`, value);
+            throw new Error(`Attachment field ${key} contains invalid type: ${valueType}`);
+          }
+        }
+        
+        // Create prototype-less object for Firestore (prevents "nested entity" error)
+        const firestoreAttachment = Object.create(null);
+        firestoreAttachment.name = cleanAttachment.name;
+        firestoreAttachment.type = cleanAttachment.type;
+        firestoreAttachment.isImage = cleanAttachment.isImage;
+        firestoreAttachment.data = cleanAttachment.data;
+        
+        messageData.attachment = firestoreAttachment;
+        
+        // Check Firestore size limits (1MB per document)
+        const attachmentSize = new Blob([JSON.stringify(messageData.attachment)]).size;
+        const attachmentSizeMB = (attachmentSize / (1024 * 1024)).toFixed(2);
+        console.log(`📊 Attachment size: ${attachmentSizeMB}MB`, {
+          name: typeof cleanAttachment.name,
+          type: typeof cleanAttachment.type,
+          isImage: typeof cleanAttachment.isImage,
+          data: typeof cleanAttachment.data
+        });
+        
+        if (attachmentSize > 1048576) { // 1MB in bytes
+          console.warn('⚠️ WARNING: Attachment may exceed Firestore document size limit (1MB)');
+          // Optionally compress or store in Firebase Storage instead
+        }
       }
       
-      const saveResult = await saveMessageDualStorage(user.uid, currentChatId, messageData);
-      console.log(`User message saved to ${saveResult.location}`);
+      console.log("💾 Saving message to Firestore with data:", {
+        text: messageData.text,
+        hasAttachment: !!messageData.attachment,
+        attachmentType: messageData.attachment?.type
+      });
+      
+      await addDoc(collection(db, "artifacts", appId, "users", user.uid, "chats", String(currentChatId), "messages"), messageData);
+      console.log("✅ User message saved successfully");
       
       // Clear file attachment after sending
       setCurrentFileAttachment(null);
 
       // Build chat history for context
-      const chatHistory = messages.slice(-10).map(m => {
-        // Include extracted text from document attachments in chat history for AI context
-        let historyText = m.text;
-        if (m.attachment && m.attachment.extractedText && !m.attachment.isImage) {
-          historyText += `\n\n[Document content]:\n${m.attachment.extractedText}`;
-        }
-        
-        return {
-          role: m.sender === 'user' ? 'user' : 'model',
-          parts: [
-            { text: historyText },
-            // Add image data if attachment exists and is an image
-            ...(m.attachment && m.attachment.isImage ? [{ inlineData: { mimeType: m.attachment.type, data: m.attachment.data.split(',')[1] } }] : [])
-          ]
-        };
-      });
+      const chatHistory = messages.slice(-10).map(m => ({
+        role: m.sender === 'user' ? 'user' : 'model',
+        parts: [
+          { text: m.text },
+          // Add image data if attachment exists
+          ...(m.attachment && m.attachment.isImage ? [{ inlineData: { mimeType: m.attachment.type, data: m.attachment.data.split(',')[1] } }] : [])
+        ]
+      }));
       
-      // Add current file attachment to user message for AI (include extracted text as context)
-      let aiContextText = cleanText;
-      if (currentFileAttachment && currentFileAttachment.extractedText) {
-        const { name = 'document' } = currentFileAttachment;
-        aiContextText += `\n\n[Document content from ${name}]:\n${currentFileAttachment.extractedText}`;
-      }
-
-      const userMessageParts = [{ text: aiContextText }];
+      // Add current file attachment to user message if present
+      const userMessageParts = [{ text: cleanText }];
       if (currentFileAttachment && currentFileAttachment.isImage) {
         userMessageParts.push({
           inlineData: {
@@ -2281,8 +1293,9 @@ const App = () => {
                          /\b(date|time)\s+today\b/.test(dateQuery) ||
                          /\bwhat[']?s?\s+(today|now|current)\b/.test(dateQuery);
 
-      let searchContext = '';
-      const currentDateTime = GoogleSearchService.getCurrentDateTime();
+      try {
+        let searchContext = '';
+        const currentDateTime = GoogleSearchService.getCurrentDateTime();
       
       // If asking about date, provide immediate accurate response without search
       if (isDateQuery) {
@@ -2301,124 +1314,167 @@ const App = () => {
         }
       }
 
-      // Detect language preference from user input
-      const detectedLanguage = detectLanguagePreference(cleanText);
-      if (detectedLanguage) {
-        setPreferredResponseLanguage(detectedLanguage);
-        console.log(`🌐 Language preference detected: ${detectedLanguage}`);
-      }
-
       // Prepare API payload with search context and current date - ALWAYS include date prominently
-      let systemMessage = searchContext
+      const systemMessage = searchContext
         ? `You are AccessAI, a helpful assistant for people with accessibility needs. Be concise, empathetic, and clear.\n\n**IMPORTANT: Today's date is ${currentDateTime.date} and the current time is ${currentDateTime.time}. Always refer to this when answering date/time questions.**\n\nContext information:\n${searchContext}`
         : `You are AccessAI, a helpful assistant for people with accessibility needs. Be concise, empathetic, and clear.\n\n**IMPORTANT: Today's date is ${currentDateTime.date} and the current time is ${currentDateTime.time}. Always refer to this when answering date/time questions.**`;
 
-      // Add language preference to system message if set
-      if (preferredResponseLanguage !== 'en') {
-        const languageNames = {
-          tamil: 'Tamil',
-          telugu: 'Telugu',
-          kannada: 'Kannada',
-          malayalam: 'Malayalam',
-          marathi: 'Marathi',
-          hindi: 'Hindi',
-          bengali: 'Bengali',
-          gujarati: 'Gujarati',
-          punjabi: 'Punjabi',
-          spanish: 'Spanish',
-          french: 'French',
-          german: 'German',
-          chinese: 'Chinese',
-          japanese: 'Japanese',
-          korean: 'Korean',
-          arabic: 'Arabic',
-        };
-        
-        const langName = languageNames[preferredResponseLanguage] || preferredResponseLanguage;
-        systemMessage += `\n\n**RESPOND IN ${langName.toUpperCase()}: Always respond to the user in ${langName}. All your responses should be in ${langName}.** Do not respond in English unless the user explicitly asks for English.`;
-      }
+      let botResponse = "";
+      let usedProvider = "";
 
-      const payload = {
-        contents: [...chatHistory, { role: "user", parts: userMessageParts }],
-        systemInstruction: {
-          parts: [{ text: systemMessage }]
-        }
-      };
+      // TRY OPENAI FIRST (if configured)
+      if (isOpenAIConfigured) {
+        try {
+          console.log("🚀 Trying OpenAI API...");
+          
+          // Convert chat history to OpenAI format
+          const openaiMessages = [
+            { role: "system", content: systemMessage },
+            ...chatHistory.map(m => ({
+              role: m.role === 'model' ? 'assistant' : m.role,
+              content: m.parts[0].text
+            })),
+            { role: "user", content: cleanText }
+          ];
 
-      // Call Gemini API with timeout
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 second timeout
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 30000);
 
-      try {
-        const result = await fetchWithRetry(GEMINI_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-          signal: controller.signal
-        });
+          const result = await fetchWithRetry(OPENAI_URL, {
+            method: "POST",
+            headers: { 
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${openaiKey}`
+            },
+            body: JSON.stringify({
+              model: OPENAI_MODEL,
+              messages: openaiMessages,
+              temperature: 0.7,
+              max_tokens: 1000
+            }),
+            signal: controller.signal
+          });
 
-        clearTimeout(timeoutId);
-
-        const botResponse = result.candidates?.[0]?.content?.parts?.[0]?.text || "I'm sorry, I couldn't process that.";
-        const cleanedResponse = cleanBotResponse(botResponse);
-
-        // Save bot response with dual-storage (Firebase + MongoDB fallback)
-        console.log("Saving bot response with dual-storage:", { currentChatId });
-        const botMessageData = {
-          text: cleanedResponse, 
-          sender: "bot", 
-          timestamp: serverTimestamp()
-        };
-        const saveBotResult = await saveMessageDualStorage(user.uid, currentChatId, botMessageData);
-        console.log(`Bot response saved to ${saveBotResult.location}`);
-        
-        // ✨ Update streak and check achievements
-        updateStreak();
-        const topic = detectLanguagePreference(cleanText) || 'General';
-        checkAndAddAchievements(topic);
-        
-        // Generate suggestions and YouTube search (in background) - Pass bot message ID
-        const botMsgId = botMessageData.id;
-        generateSuggestions(cleanedResponse, botMsgId).catch(err => console.warn('Failed to generate suggestions:', err));
-        searchYoutube(cleanText, botMsgId).catch(err => console.warn('Failed to search YouTube:', err));
-        
-        // Speak response if enabled - with automatic English translation for better TTS support
-        if (isSpeaking) {
-          try {
-            await speakWithTranslation(cleanedResponse);
-          } catch (speechErr) {
-            console.warn("Speech synthesis unavailable:", speechErr);
+          clearTimeout(timeoutId);
+          botResponse = result.choices?.[0]?.message?.content || "";
+          usedProvider = "OpenAI";
+          console.log("✅ OpenAI API success");
+        } catch (openaiError) {
+          console.warn("⚠️ OpenAI failed:", openaiError.status || openaiError.message);
+          
+          // Always try Hugging Face fallback if OpenAI fails and HF is available
+          if (isHFConfigured) {
+            console.log("🔄 Falling back to Hugging Face...");
+            // botResponse remains empty, will trigger HF below
+          } else {
+            // No fallback available
+            throw new Error("OpenAI API failed: " + (openaiError.message || "Unknown error"));
           }
         }
-        
-        // Play sign sequence
-        playSignSequence(cleanedResponse);
-      } catch (apiError) {
-        clearTimeout(timeoutId);
-        
+      }
+
+      // TRY HUGGING FACE (if OpenAI failed or not configured)
+      if (!botResponse && isHFConfigured) {
+        try {
+          console.log("🚀 Using Hugging Face API (FREE) with", HF_MODEL);
+          
+          // Initialize Hugging Face client
+          const hfClient = new InferenceClient(huggingfaceKey);
+          
+          // Build conversation messages for Hugging Face
+          const hfMessages = [
+            { role: "system", content: systemMessage }
+          ];
+          
+          // Add chat history
+          chatHistory.forEach(m => {
+            hfMessages.push({
+              role: m.role === 'model' ? 'assistant' : 'user',
+              content: m.parts[0].text
+            });
+          });
+          
+          // Add current user message
+          hfMessages.push({ role: "user", content: cleanText });
+
+          console.log("📝 Calling Hugging Face with", hfMessages.length, "messages");
+          
+          // Use chatCompletion with Qwen2.5-7B (better quality than Mistral)
+          const result = await hfClient.chatCompletion({
+            model: HF_MODEL,
+            messages: hfMessages,
+            max_tokens: 500,
+            temperature: 0.7
+          });
+
+          botResponse = result.choices?.[0]?.message?.content || "";
+          usedProvider = "Hugging Face - Qwen2.5-7B";
+          console.log("✅ Hugging Face API success, response length:", botResponse.length);
+        } catch (hfError) {
+          console.error("❌ Hugging Face failed:", hfError);
+          throw new Error("All AI providers failed");
+        }
+      }
+
+      if (!botResponse) {
+        throw new Error("No AI provider available");
+      }
+
+      const cleanedResponse = cleanBotResponse(botResponse);
+      console.log(`✅ Response from ${usedProvider}`);
+
+      // Save bot response
+      console.log("💾 Saving bot response to Firestore:", { currentChatId, responseLength: cleanedResponse.length });
+      await addDoc(collection(db, "artifacts", appId, "users", user.uid, "chats", String(currentChatId), "messages"), {
+        text: cleanedResponse, sender: "bot", timestamp: serverTimestamp()
+      });
+      console.log("✅ Bot response saved successfully");
+      
+      // Speak response if enabled
+      if (isSpeaking && window.speechSynthesis) {
+        try {
+          const ut = new SpeechSynthesisUtterance(cleanedResponse);
+          window.speechSynthesis.speak(ut);
+        } catch (speechErr) {
+          console.warn("Speech synthesis unavailable:", speechErr);
+        }
+      }
+      
+      // Play sign sequence
+      playSignSequence(cleanedResponse);
+    } catch (apiError) {
         // Handle different error types
         let userErrorMsg = "❌ Failed to get response. Please try again.";
         
         if (apiError.name === 'AbortError') {
-          userErrorMsg = "⏱️ Request timed out. Please try again.";
-        } else if (apiError.status === 401) {
-          userErrorMsg = "🔑 API authentication failed. Please check your credentials.";
+          userErrorMsg = "⏱️ Request timed out.\n\n💡 Try:\n• Simplifying your request\n• Making it more specific\n• Asking again in a moment";
+        } else if (apiError.message?.includes("No AI provider")) {
+          userErrorMsg = "❌ No AI service configured.\n\nPlease add either:\n• OpenAI API key (VITE_OPENAI_API_KEY)\n• Hugging Face API key (VITE_HUGGINGFACE_API_KEY)\n\nin your .env file.";
+        } else if (apiError.message?.includes("All AI providers failed")) {
+          userErrorMsg = "❌ All AI services failed.\n\n" +
+            (isOpenAIConfigured ? "• OpenAI: No credits/billing\n" : "") +
+            (isHFConfigured ? "• Hugging Face: Service error\n" : "") +
+            "\n💡 Try again in a moment or check your API keys.";
+        } else if (apiError.status === 401 || apiError.status === 403) {
+          userErrorMsg = "🔑 API authentication failed. Please check your API keys in the .env file.";
         } else if (apiError.status === 429) {
-          userErrorMsg = "⚡ Rate limited. Please wait a moment and try again.";
-        } else if (apiError.status === 500) {
-          userErrorMsg = "🔧 API server error. Please try again later.";
+          userErrorMsg = "⚡ Rate limit exceeded on OpenAI.\n\n" +
+            (isHFConfigured ? "✅ Automatic fallback to Hugging Face should activate." : 
+             "💡 Add VITE_HUGGINGFACE_API_KEY in .env for free fallback.");
+        } else if (apiError.status === 500 || apiError.status === 503) {
+          userErrorMsg = "🔧 API server error. The service is having issues. Please try again in a moment.";
+        } else if (apiError.message) {
+          userErrorMsg = `❌ Error: ${apiError.message}`;
         }
 
-        console.error("Gemini API Error:", apiError);
+        console.error("AI API Error:", apiError);
         
-        // Save error message with dual-storage
         if (isFirebaseConfigured && db) {
-          const errorMessageData = {
+          await addDoc(collection(db, "artifacts", appId, "users", user.uid, "chats", String(currentChatId), "messages"), {
             text: userErrorMsg, 
             sender: "bot", 
             timestamp: serverTimestamp()
-          };
-          await saveMessageDualStorage(user.uid, currentChatId, errorMessageData);
+          });
         }
       }
       
@@ -2467,63 +1523,6 @@ const App = () => {
 
   return (
     <div style={{ display: 'flex', height: '100vh', background: 'var(--bg-darker)', color: 'var(--text-primary)', fontFamily: 'system-ui, -apple-system, sans-serif' }}>
-      <style>{`
-        /* Smooth Button Transitions with Curved Motion */
-        button {
-          transition: all 0.3s cubic-bezier(0.4, 0.01, 0.165, 0.99) !important;
-          will-change: transform, background, border-color, box-shadow;
-        }
-        
-        button:hover {
-          transform: translateY(-2px) scale(1.02);
-          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-        }
-        
-        button:active {
-          transform: translateY(0) scale(0.98);
-          box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-        }
-        
-        /* Edit Button Smooth Styles - Curved */
-        .smooth-btn-edit {
-          border-radius: 8px !important;
-        }
-        
-        .smooth-btn-edit:hover {
-          background: #f3f4f6 !important;
-          border-color: #d1d5db !important;
-        }
-        
-        /* Delete Button Smooth Styles - Curved */
-        .smooth-btn-delete {
-          border-radius: 8px !important;
-        }
-        
-        .smooth-btn-delete:hover {
-          background: #f3f4f6 !important;
-          border-color: #d1d5db !important;
-        }
-        
-        /* Save Button Smooth Styles - Curved */
-        .smooth-btn-save {
-          border-radius: 8px !important;
-        }
-        
-        .smooth-btn-save:hover {
-          background: #f3f4f6 !important;
-          border-color: #d1d5db !important;
-        }
-        
-        /* Cancel Button Smooth Styles - Curved */
-        .smooth-btn-cancel {
-          border-radius: 8px !important;
-        }
-        
-        .smooth-btn-cancel:hover {
-          background: #f3f4f6 !important;
-          border-color: #d1d5db !important;
-        }
-      `}</style>
       {/* Chat Sidebar */}
       <ChatSidebar 
         chats={chats}
@@ -2613,63 +1612,9 @@ const App = () => {
             background: 'linear-gradient(135deg, #4D9FFF 0%, #7C3AED 100%)',
             WebkitBackgroundClip: 'text',
             WebkitTextFillColor: 'transparent',
-            backgroundClip: 'text',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '1rem'
+            backgroundClip: 'text'
           }}>
-            <span>AccessAI</span>
-            {/* Streak Display */}
-            {userStats.currentStreak > 0 && (
-              <div style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.5rem',
-                padding: '0.4rem 0.8rem',
-                background: 'linear-gradient(135deg, #FF6B6B 0%, #FF8E53 100%)',
-                borderRadius: '20px',
-                fontSize: '0.9rem',
-                fontWeight: '700',
-                color: 'white',
-                WebkitBackgroundClip: 'unset',
-                WebkitTextFillColor: 'unset',
-                backgroundClip: 'unset'
-              }}>
-                <span>🔥</span>
-                <span>{userStats.currentStreak} day{userStats.currentStreak !== 1 ? 's' : ''}</span>
-              </div>
-            )}
-            {/* Achievements Display */}
-            {(userStats.achievements || []).length > 0 && (
-              <div style={{
-                display: 'flex',
-                gap: '0.3rem',
-                alignItems: 'center'
-              }}>
-                {userStats.achievements.slice(0, 3).map((badge, idx) => (
-                  <div
-                    key={idx}
-                    style={{
-                      fontSize: '1.1rem',
-                      cursor: 'pointer',
-                      transition: 'transform 0.2s ease'
-                    }}
-                    onClick={() => alert(`Achievement: ${badge}`)}
-                    onMouseOver={(e) => e.target.style.transform = 'scale(1.2)'}
-                    onMouseOut={(e) => e.target.style.transform = 'scale(1)'}
-                    title={badge}
-                  >
-                    {badge === 'First Message' && '🎯'}
-                    {badge === 'Chatty' && '💬'}
-                    {badge === 'Conversationalist' && '👥'}
-                    {badge === 'ChatMaster' && '🏆'}
-                    {badge === 'Week Streak' && '🌟'}
-                    {badge === 'Month Streak' && '⭐'}
-                    {badge === 'Knowledge Explorer' && '🧠'}
-                  </div>
-                ))}
-              </div>
-            )}
+            AccessAI
           </h2>
           <div style={{ display: 'flex', gap: '0.75rem' }}>
             {/* SOS Emergency Button */}
@@ -2680,8 +1625,14 @@ const App = () => {
                   emergencyContacts={emergencyContacts}
                   db={db}
                   onEmergencyTriggered={async (eventData) => {
+                    // Log to Firestore (non-blocking - SMS/Email already sent)
                     if (db) {
-                      await EmergencyContactService.logEmergencyEvent(user.uid, eventData, db);
+                      try {
+                        await EmergencyContactService.logEmergencyEvent(user.uid, eventData, db);
+                      } catch (err) {
+                        // Silently fail - critical alerts (SMS/Email) already sent
+                        console.warn('Event logging skipped:', err.message);
+                      }
                     }
                     console.log('🚨 Emergency triggered:', eventData);
                   }}
@@ -2743,48 +1694,6 @@ const App = () => {
             >
               <img src="/translator.png" alt="Translator" style={{ width: '20px', height: '20px' }} />
             </button>
-            
-            {/* JARVIS Voice Command Mode Button - TOP RIGHT */}
-            <button
-              onClick={toggleVoiceCommandMode}
-              style={{
-                width: '40px',
-                height: '40px',
-                borderRadius: '8px',
-                border: isListeningCommands ? '2px solid #3B82F6' : '2px solid rgba(79, 70, 229, 0.5)',
-                background: isListeningCommands ? 'linear-gradient(135deg, #3B82F6 0%, #1E3A8A 100%)' : 'rgba(255, 255, 255, 0.9)',
-                color: isListeningCommands ? '#93C5FD' : '#333',
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                transition: 'all 0.3s cubic-bezier(0.4, 0.01, 0.165, 0.99)',
-                fontSize: '1.3rem',
-                animation: isListeningCommands ? 'pulse 1.5s infinite' : 'none',
-                boxShadow: isListeningCommands ? '0 0 20px rgba(59, 130, 246, 0.8)' : 'none',
-                fontWeight: '600'
-              }}
-              onMouseOver={(e) => {
-                e.target.style.transform = 'scale(1.15)';
-              }}
-              onMouseOut={(e) => {
-                e.target.style.transform = 'scale(1)';
-              }}
-              title={isListeningCommands 
-                ? (isVoiceCommandMode ? '🎙️ JARVIS ACTIVE - Give commands' : '🎤 Listening - Say "Hey Jarvis"')
-                : 'Enable JARVIS Voice Control (Click to start listening)'}
-            >
-              <img 
-                src="/voice command.png" 
-                alt="Voice Command" 
-                style={{
-                  width: '24px',
-                  height: '24px',
-                  objectFit: 'contain'
-                }}
-              />
-            </button>
-            
             <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
               <button 
                 onClick={() => setShowUserMenu(!showUserMenu)}
@@ -2844,12 +1753,11 @@ const App = () => {
                   minWidth: '200px',
                   boxShadow: '0 10px 25px rgba(0, 0, 0, 0.2)',
                   zIndex: 1000,
-                  overflow: 'hidden',
-                  background: 'white'
+                  overflow: 'hidden'
                 }}>
                   <div style={{
                     padding: '12px 16px',
-                    borderBottom: '1px solid #e0e0e0',
+                    borderBottom: '1px solid var(--border)',
                     textAlign: 'center'
                   }}>
                     {user?.photoURL && (
@@ -2864,16 +1772,16 @@ const App = () => {
                             height: '48px',
                             borderRadius: '50%',
                             objectFit: 'cover',
-                            border: '2px solid #667eea',
+                            border: '2px solid var(--primary)',
                             margin: '0 auto'
                           }}
                         />
                       </div>
                     )}
-                    <div style={{ fontSize: '0.9rem', fontWeight: '600', color: 'black' }}>
+                    <div style={{ fontSize: '0.9rem', fontWeight: '600', color: 'var(--text-primary)' }}>
                       {user?.displayName || 'User'}
                     </div>
-                    <div style={{ fontSize: '0.8rem', color: '#666', marginTop: '4px' }}>
+                    <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '4px' }}>
                       {user?.email || user?.phoneNumber || 'Authenticated'}
                     </div>
                   </div>
@@ -2906,10 +1814,10 @@ const App = () => {
         <div style={{
           flex: 1,
           overflowY: 'auto',
-          padding: '2rem 2.5rem',
+          padding: '2rem',
           display: 'flex',
           flexDirection: 'column',
-          gap: '2rem'
+          gap: '1.5rem'
         }}>
           {messages.length === 0 && !isThinking ? (
             <div style={{
@@ -2995,22 +1903,17 @@ const App = () => {
               {messages.map((m, idx) => {
                 const sentimentInfo = m.nlp ? NLPService.getSentimentEmoji(m.nlp.sentiment) : null;
                 const intentEmoji = m.nlp ? NLPService.getIntentEmoji(m.nlp.intent) : null;
-                const lastUserMessageIdx = messages.reduce((last, msg, i) => msg.sender === 'user' ? i : last, -1);
-                const isLastUserMessage = m.sender === 'user' && idx === lastUserMessageIdx;
                 
-                // Generate unique key: combine ID with index to ensure uniqueness
-                const messageKey = m.id ? `${m.id}-${idx}` : `${m.sender}-${idx}-${m.text?.slice(0, 10) || 'msg'}`;
+                // Generate a truly unique key using ID + timestamp + index as fallback
+                const uniqueKey = m.id ? `${m.id}-${m.timestamp?.seconds || idx}` : `msg-${idx}-${Date.now()}`;
                 
                 return (
-                <div key={messageKey} style={{
+                <div key={uniqueKey} style={{
                   display: 'flex',
                   gap: '1rem',
                   justifyContent: m.sender === 'user' ? 'flex-end' : 'flex-start',
                   alignItems: 'flex-start',
-                  animation: 'fadeIn 0.3s ease',
-                  marginBottom: '1.2rem',
-                  paddingLeft: m.sender === 'user' ? '2rem' : '0',
-                  paddingRight: m.sender === 'user' ? '0' : '2rem'
+                  animation: 'fadeIn 0.3s ease'
                 }}>
                   {m.sender === 'bot' && (
                     <img 
@@ -3029,87 +1932,41 @@ const App = () => {
                     maxWidth: '60%',
                     display: 'flex',
                     flexDirection: 'column',
-                    gap: '0.7rem'
+                    gap: '0.4rem'
                   }}>
                     {/* File Attachment Thumbnail */}
                     {m.attachment && (
-                      <div>
+                      <div style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '0.5rem',
+                        padding: '0.5rem',
+                        background: 'rgba(102, 126, 234, 0.1)',
+                        border: '1px solid rgba(102, 126, 234, 0.3)',
+                        borderRadius: '8px',
+                        marginBottom: '0.5rem'
+                      }}>
                         {m.attachment.isImage ? (
-                          <div style={{
-                            display: 'flex',
-                            flexDirection: 'column',
-                            gap: '0.5rem',
-                            marginBottom: '0.5rem'
-                          }}>
-                            <div style={{
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: '0.5rem',
-                              padding: '0.5rem',
-                              background: 'rgba(102, 126, 234, 0.1)',
-                              border: '1px solid rgba(102, 126, 234, 0.3)',
-                              borderRadius: '8px',
-                              position: 'relative',
-                              maxWidth: 'fit-content',
-                              cursor: 'pointer',
-                              transition: 'all 0.3s ease'
+                          <img 
+                            src={m.attachment.data} 
+                            alt={m.attachment.name}
+                            style={{
+                              maxWidth: '150px',
+                              maxHeight: '150px',
+                              borderRadius: '6px',
+                              objectFit: 'cover'
                             }}
-                            onClick={() => setImagePreviewModal({
-                              isOpen: true,
-                              imageData: m.attachment.data,
-                              imageName: m.attachment.name
-                            })}
-                            onMouseOver={(e) => {
-                              e.currentTarget.style.background = 'rgba(102, 126, 234, 0.2)';
-                              e.currentTarget.style.transform = 'scale(1.02)';
+                            onError={(e) => {
+                              console.error('Image failed to load:', {
+                                name: m.attachment.name,
+                                type: m.attachment.type,
+                                dataLength: m.attachment.data?.length,
+                                dataPrefix: m.attachment.data?.substring(0, 50)
+                              });
+                              e.target.style.display = 'none';
+                              e.target.nextElementSibling.style.display = 'flex';
                             }}
-                            onMouseOut={(e) => {
-                              e.currentTarget.style.background = 'rgba(102, 126, 234, 0.1)';
-                              e.currentTarget.style.transform = 'scale(1)';
-                            }}
-                            title="Click to view full image">
-                              <img 
-                                src={m.attachment.data} 
-                                alt={m.attachment.name}
-                                style={{
-                                  maxWidth: '200px',
-                                  maxHeight: '200px',
-                                  borderRadius: '6px',
-                                  objectFit: 'cover'
-                                }}
-                              />
-                            </div>
-                            <button
-                              onClick={() => downloadImage(m.attachment.data, m.attachment.name.replace('.png', ''))}
-                              style={{
-                                padding: '0.5rem 1rem',
-                                borderRadius: '6px',
-                                border: 'none',
-                                background: 'linear-gradient(135deg, #0E78F5 0%, #7C3AED 100%)',
-                                color: 'white',
-                                cursor: 'pointer',
-                                fontSize: '0.85rem',
-                                fontWeight: '500',
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: '0.5rem',
-                                transition: 'all 0.3s ease',
-                                width: 'fit-content'
-                              }}
-                              onMouseOver={(e) => {
-                                e.target.style.transform = 'translateY(-2px)';
-                                e.target.style.boxShadow = '0 8px 20px rgba(14, 120, 245, 0.3)';
-                              }}
-                              onMouseOut={(e) => {
-                                e.target.style.transform = 'translateY(0)';
-                                e.target.style.boxShadow = 'none';
-                              }}
-                              title="Download image"
-                            >
-                              <img src="/download (2).png" alt="Download" style={{ width: '16px', height: '16px', objectFit: 'contain' }} />
-                              Download
-                            </button>
-                          </div>
+                          />
                         ) : (
                           <div style={{
                             display: 'flex',
@@ -3117,18 +1974,41 @@ const App = () => {
                             gap: '0.5rem',
                             padding: '0.5rem',
                             background: 'rgba(102, 126, 234, 0.2)',
-                            borderRadius: '6px',
-                            marginBottom: '0.5rem'
+                            borderRadius: '6px'
                           }}>
-                            <img src="/image.png" alt="Image" style={{ width: '20px', height: '20px', objectFit: 'contain', flexShrink: 0 }} />
-                            <span style={{ fontSize: '0.85rem', fontWeight: '500' }}>{m.attachment.name || 'Document'}</span>
+                            <span style={{ fontSize: '1.5rem' }}>📎</span>
+                            <span style={{ fontSize: '0.85rem', fontWeight: '500' }}>{m.attachment.name}</span>
                           </div>
                         )}
+                        {/* Fallback for failed images */}
+                        <div style={{
+                          display: 'none',
+                          alignItems: 'center',
+                          gap: '0.5rem',
+                          padding: '0.5rem',
+                          background: 'rgba(239, 68, 68, 0.2)',
+                          borderRadius: '6px',
+                          border: '1px solid rgba(239, 68, 68, 0.3)'
+                        }}>
+                          <span style={{ fontSize: '1.5rem' }}>⚠️</span>
+                          <span style={{ fontSize: '0.85rem', fontWeight: '500' }}>
+                            {m.attachment.name} (Image failed to load)
+                          </span>
+                        </div>
                       </div>
                     )}
                     
+                    {/* Generated Image Reference (MongoDB/Firestore stored) */}
+                    {m.imageRef && (
+                      <GeneratedImageDisplay 
+                        imageRef={m.imageRef}
+                        userId={user?.uid}
+                        chatId={currentChatId}
+                      />
+                    )}
+                    
                     <div style={{
-                      padding: '1rem 1.5rem',
+                      padding: '0.75rem 1rem',
                       borderRadius: '12px',
                       background: m.sender === 'user' 
                         ? 'linear-gradient(135deg, rgba(14, 120, 245, 0.25) 0%, rgba(124, 58, 237, 0.2) 100%)'
@@ -3137,216 +2017,142 @@ const App = () => {
                         ? '1px solid rgba(124, 58, 237, 0.3)'
                         : '1px solid rgba(77, 159, 255, 0.2)',
                       color: 'var(--text-primary)',
-                      wordBreak: 'break-word',
-                      lineHeight: '1.6',
-                      letterSpacing: '0.3px',
-                      animation: 'slideInMessage 0.4s cubic-bezier(0.34, 1.56, 0.64, 1)',
-                      fontSize: '0.95rem'
+                      wordBreak: 'break-word'
                     }}>
-                      {m.attachment && m.attachment.isImage && (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
-                          <img src="/image.png" alt="Image" style={{ width: '20px', height: '20px', objectFit: 'contain' }} />
-                        </div>
+                      {m.sender === 'bot' ? (
+                        <FormattedMessage text={m.text} />
+                      ) : (
+                        m.text
                       )}
-                      <div style={{ width: '100%' }}>
-                        {m.isGenerating ? (
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                            <div style={{ 
-                              display: 'flex', 
-                              gap: '0.4rem',
-                              alignItems: 'center'
-                            }}>
-                              <div style={{
-                                width: '8px',
-                                height: '8px',
-                                borderRadius: '50%',
-                                background: 'var(--accent)',
-                                animation: 'bounce 1.4s infinite'
-                              }} />
-                              <div style={{
-                                width: '8px',
-                                height: '8px',
-                                borderRadius: '50%',
-                                background: 'var(--accent)',
-                                animation: 'bounce 1.4s infinite 0.2s'
-                              }} />
-                              <div style={{
-                                width: '8px',
-                                height: '8px',
-                                borderRadius: '50%',
-                                background: 'var(--accent)',
-                                animation: 'bounce 1.4s infinite 0.4s'
-                              }} />
-                            </div>
-                            <span style={{ fontSize: '0.9rem', fontWeight: '500' }}>
-                              {m.text}
-                            </span>
-                          </div>
-                        ) : (
-                          renderMessageWithCodeHighlight(m.text.replace('🎨 ', ''))
-                        )}
-                      </div>
                     </div>
                     
-                    {/* Message Timestamp */}
-                    {m.timestamp && (
-                      <div style={{
-                        fontSize: '0.75rem',
-                        color: 'var(--text-secondary)',
-                        opacity: 0.7,
-                        paddingRight: m.sender === 'user' ? '0' : '0.5rem',
-                        paddingLeft: m.sender === 'user' ? '0.5rem' : '0',
-                        textAlign: m.sender === 'user' ? 'right' : 'left',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '0.5rem'
-                      }}>
-                        {(() => {
-                          try {
-                            const timestamp = m.timestamp.toDate ? m.timestamp.toDate() : 
-                                            (m.timestamp.seconds ? new Date(m.timestamp.seconds * 1000) : 
-                                            (m.timestamp instanceof Date ? m.timestamp : new Date(m.timestamp)));
-                            return timestamp.toLocaleTimeString([], { 
-                              hour: '2-digit', 
-                              minute: '2-digit',
-                              hour12: true 
-                            });
-                          } catch (e) {
-                            return 'Now';
-                          }
-                        })()}
-                        {m.isEdited && (
-                          <span style={{ fontSize: '0.65rem', fontStyle: 'italic', color: 'rgba(255, 165, 0, 0.8)' }}>
-                            (edited)
-                          </span>
-                        )}
-                      </div>
-                    )}
-                    
-                    {/* Edit Button for Last User Message Only */}
-                    {isLastUserMessage && editingMessageId !== (m.id || idx) && (
-                      <button
-                        onClick={() => {
-                          setEditingMessageId(m.id || idx);
-                          setEditingText(m.text);
-                        }}
-                        className="smooth-btn-edit"
-                        style={{
-                          background: 'white',
-                          border: '1px solid #e5e7eb',
-                          color: 'black',
-                          borderRadius: '8px',
-                          padding: '0.3rem 0.6rem',
-                          fontSize: '0.7rem',
-                          cursor: 'pointer',
-                          transition: 'all 0.3s cubic-bezier(0.4, 0.01, 0.165, 0.99)',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center'
-                        }}
-                      >
-                        <img src="/edit.png" alt="Edit" style={{ width: '16px', height: '16px', marginRight: '4px' }} />
-                        Edit
-                      </button>
-                    )}
-                    
-                    {/* Delete Button for User Messages */}
-                    {m.sender === 'user' && editingMessageId !== (m.id || idx) && (
-                      <button
-                        onClick={() => {
-                          if (confirm('Delete this conversation and AI response? This cannot be undone.')) {
-                            deleteConversation(m.id || idx);
-                          }
-                        }}
-                        className="smooth-btn-delete"
-                        style={{
-                          background: 'white',
-                          border: '1px solid #e5e7eb',
-                          color: 'black',
-                          borderRadius: '8px',
-                          padding: '0.3rem 0.6rem',
-                          fontSize: '0.7rem',
-                          cursor: 'pointer',
-                          transition: 'all 0.3s cubic-bezier(0.4, 0.01, 0.165, 0.99)',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center'
-                        }}
-                        title="Delete this conversation pair"
-                      >
-                        <img src="/delete.png" alt="Delete" style={{ width: '16px', height: '16px', marginRight: '4px' }} />
-                        Delete
-                      </button>
-                    )}
-                    
-                    {/* Edit Mode UI */}
-                    {editingMessageId === (m.id || idx) && isLastUserMessage && (
+                    {/* Action Buttons for Bot Messages */}
+                    {m.sender === 'bot' && m.text && (
                       <div style={{
                         display: 'flex',
                         gap: '0.5rem',
-                        marginTop: '0.5rem',
-                        width: '100%',
-                        flexDirection: 'column'
+                        flexWrap: 'wrap',
+                        marginTop: '0.5rem'
                       }}>
-                        <input
-                          type="text"
-                          value={editingText}
-                          onChange={(e) => setEditingText(e.target.value)}
-                          style={{
-                            padding: '0.5rem',
-                            borderRadius: '6px',
-                            border: '1px solid rgba(102, 126, 234, 0.5)',
-                            background: 'rgba(102, 126, 234, 0.05)',
-                            color: 'var(--text-primary)',
-                            fontSize: 'inherit',
-                            width: '100%'
+                        {/* YouTube Button */}
+                        <button
+                          onClick={() => {
+                            const query = encodeURIComponent(m.text.substring(0, 100));
+                            window.open(`https://www.youtube.com/results?search_query=${query}`, '_blank');
                           }}
-                          autoFocus
-                        />
-                        <div style={{ display: 'flex', gap: '0.5rem' }}>
-                          <button
-                            onClick={() => editMessage(m.id || idx, editingText)}
-                            className="smooth-btn-save"
-                            style={{
-                              padding: '0.4rem 0.8rem',
-                              background: 'white',
-                              border: '1px solid #e5e7eb',
-                              borderRadius: '8px',
-                              color: 'black',
-                              cursor: 'pointer',
-                              fontSize: '0.75rem',
-                              transition: 'all 0.3s cubic-bezier(0.4, 0.01, 0.165, 0.99)',
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'center'
-                            }}
-                          >
-                            <img src="/save.png" alt="Save" style={{ width: '16px', height: '16px', marginRight: '4px' }} />
-                            Save
-                          </button>
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '0.5rem',
+                            padding: '0.4rem 0.8rem',
+                            background: '#FF0000',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '6px',
+                            cursor: 'pointer',
+                            fontSize: '0.8rem',
+                            fontWeight: '600',
+                            transition: 'transform 0.2s, opacity 0.2s'
+                          }}
+                          onMouseEnter={(e) => { e.target.style.transform = 'scale(1.05)'; e.target.style.opacity = '0.9'; }}
+                          onMouseLeave={(e) => { e.target.style.transform = 'scale(1)'; e.target.style.opacity = '1'; }}
+                          title="Search on YouTube"
+                        >
+                          <img src="/youtube.png" alt="YouTube" style={{ width: '16px', height: '16px' }} />
+                          YouTube
+                        </button>
+
+                        {/* Suggestions Button */}
+                        <button
+                          onClick={async () => {
+                            const suggestPrompt = `Give me 3 brief suggestions or tips related to: "${m.text.substring(0, 100)}"`;
+                            await handleSend(suggestPrompt);
+                          }}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '0.5rem',
+                            padding: '0.4rem 0.8rem',
+                            background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '6px',
+                            cursor: 'pointer',
+                            fontSize: '0.8rem',
+                            fontWeight: '600',
+                            transition: 'transform 0.2s, opacity 0.2s'
+                          }}
+                          onMouseEnter={(e) => { e.target.style.transform = 'scale(1.05)'; e.target.style.opacity = '0.9'; }}
+                          onMouseLeave={(e) => { e.target.style.transform = 'scale(1)'; e.target.style.opacity = '1'; }}
+                          title="Get suggestions"
+                        >
+                          💡 Suggestions
+                        </button>
+
+                        {/* Copy Button */}
+                        <button
+                          onClick={() => {
+                            navigator.clipboard.writeText(m.text)
+                              .then(() => {
+                                console.log('✅ Text copied to clipboard');
+                              })
+                              .catch(err => {
+                                console.error('❌ Failed to copy:', err);
+                              });
+                          }}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '0.5rem',
+                            padding: '0.4rem 0.8rem',
+                            background: 'rgba(124, 58, 237, 0.8)',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '6px',
+                            cursor: 'pointer',
+                            fontSize: '0.8rem',
+                            fontWeight: '600',
+                            transition: 'transform 0.2s, opacity 0.2s'
+                          }}
+                          onMouseEnter={(e) => { e.target.style.transform = 'scale(1.05)'; e.target.style.opacity = '0.9'; }}
+                          onMouseLeave={(e) => { e.target.style.transform = 'scale(1)'; e.target.style.opacity = '1'; }}
+                          title="Copy to clipboard"
+                        >
+                          <img src="/copy.png" alt="Copy" style={{ width: '16px', height: '16px' }} />
+                          Copy
+                        </button>
+
+                        {/* Image Button (if message has image reference) */}
+                        {m.imageRef && (
                           <button
                             onClick={() => {
-                              setEditingMessageId(null);
-                              setEditingText('');
+                              const imgElement = document.querySelector(`[alt="${m.imageRef.prompt || 'Generated Image'}"]`);
+                              if (imgElement) {
+                                imgElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                              }
                             }}
-                            className="smooth-btn-cancel"
                             style={{
-                              padding: '0.4rem 0.8rem',
-                              background: 'white',
-                              border: '1px solid #e5e7eb',
-                              borderRadius: '8px',
-                              color: 'black',
-                              cursor: 'pointer',
-                              fontSize: '0.75rem',
-                              transition: 'all 0.3s cubic-bezier(0.4, 0.01, 0.165, 0.99)',
                               display: 'flex',
                               alignItems: 'center',
-                              justifyContent: 'center'
+                              gap: '0.5rem',
+                              padding: '0.4rem 0.8rem',
+                              background: 'rgba(59, 130, 246, 0.8)',
+                              color: 'white',
+                              border: 'none',
+                              borderRadius: '6px',
+                              cursor: 'pointer',
+                              fontSize: '0.8rem',
+                              fontWeight: '600',
+                              transition: 'transform 0.2s, opacity 0.2s'
                             }}
+                            onMouseEnter={(e) => { e.target.style.transform = 'scale(1.05)'; e.target.style.opacity = '0.9'; }}
+                            onMouseLeave={(e) => { e.target.style.transform = 'scale(1)'; e.target.style.opacity = '1'; }}
+                            title="Scroll to image"
                           >
-                            ✕ Cancel
+                            <img src="/image.png" alt="Image" style={{ width: '16px', height: '16px' }} />
+                            Image
                           </button>
-                        </div>
+                        )}
                       </div>
                     )}
                     
@@ -3387,430 +2193,6 @@ const App = () => {
                         )}
                       </div>
                     )}
-                    
-                    {/* ========== ENGAGEMENT FEATURES ========== */}
-                    
-                    {/* Bot Message Engagement Features */}
-                    {m.sender === 'bot' && (
-                      <div style={{
-                        display: 'flex',
-                        flexDirection: 'column',
-                        gap: '0.75rem',
-                        marginTop: '0.5rem'
-                      }}>
-                        
-                        {/* 1. Reaction Buttons */}
-                        {/* 2. Action Buttons */}
-                        {expandedMessage !== (m.id || idx) && (
-                          <div style={{
-                            display: 'flex',
-                            gap: '0.5rem',
-                            flexWrap: 'wrap',
-                            fontSize: '0.75rem'
-                          }}>
-                            <button
-                              onClick={() => {
-                                const msgId = m.id || idx;
-                                setExpandedMessage(msgId);
-                                // Trigger fetch if not already loaded
-                                if (!messageYoutubeResults[msgId] && !loadingYoutube[msgId]) {
-                                  searchYoutube(m.text, msgId);
-                                }
-                              }}
-                              style={{
-                                background: 'rgba(239, 68, 68, 0.1)',
-                                border: '1px solid rgba(239, 68, 68, 0.3)',
-                                color: 'var(--text-secondary)',
-                                borderRadius: '6px',
-                                padding: '0.4rem 0.7rem',
-                                cursor: 'pointer',
-                                transition: 'all 0.2s ease',
-                                fontSize: '0.75rem'
-                              }}
-                              onMouseOver={(e) => {
-                                e.target.style.background = 'rgba(239, 68, 68, 0.2)';
-                                e.target.style.borderColor = 'rgb(239, 68, 68)';
-                              }}
-                              onMouseOut={(e) => {
-                                e.target.style.background = 'rgba(239, 68, 68, 0.1)';
-                                e.target.style.borderColor = 'rgba(239, 68, 68, 0.3)';
-                              }}
-                              title="Search related YouTube videos"
-                            >
-                              <img src="/youtube.png" alt="YouTube" style={{ width: '16px', height: '16px', objectFit: 'contain', marginRight: '0.3rem' }} />
-                              YouTube{messageYoutubeResults[m.id || idx]?.length > 0 ? ` (${messageYoutubeResults[m.id || idx].length})` : ''}
-                            </button>
-                            
-                            <button
-                              onClick={() => {
-                                const msgId = m.id || idx;
-                                setExpandedMessage(msgId);
-                                // Trigger fetch if not already loaded
-                                if (!messageSuggestions[msgId] && !loadingSuggestions[msgId]) {
-                                  generateSuggestions(m.text, msgId);
-                                }
-                              }}
-                              style={{
-                                background: 'rgba(34, 197, 94, 0.1)',
-                                border: '1px solid rgba(34, 197, 94, 0.3)',
-                                color: 'var(--text-secondary)',
-                                borderRadius: '6px',
-                                padding: '0.4rem 0.7rem',
-                                cursor: 'pointer',
-                                transition: 'all 0.2s ease',
-                                fontSize: '0.75rem'
-                              }}
-                              onMouseOver={(e) => {
-                                e.target.style.background = 'rgba(34, 197, 94, 0.2)';
-                                e.target.style.borderColor = 'rgb(34, 197, 94)';
-                              }}
-                              onMouseOut={(e) => {
-                                e.target.style.background = 'rgba(34, 197, 94, 0.1)';
-                                e.target.style.borderColor = 'rgba(34, 197, 94, 0.3)';
-                              }}
-                              title="Get related topics"
-                            >
-                              💡 Suggestions{messageSuggestions[m.id || idx]?.length > 0 ? ` (${messageSuggestions[m.id || idx].length})` : ''}
-                            </button>
-                            
-                            <button
-                              onClick={() => navigator.clipboard.writeText(m.text)}
-                              style={{
-                                background: 'rgba(168, 85, 247, 0.1)',
-                                border: '1px solid rgba(168, 85, 247, 0.3)',
-                                color: 'var(--text-secondary)',
-                                borderRadius: '6px',
-                                padding: '0.4rem 0.7rem',
-                                cursor: 'pointer',
-                                transition: 'all 0.2s ease',
-                                fontSize: '0.75rem'
-                              }}
-                              onMouseOver={(e) => {
-                                e.target.style.background = 'rgba(168, 85, 247, 0.2)';
-                                e.target.style.borderColor = 'rgb(168, 85, 247)';
-                              }}
-                              onMouseOut={(e) => {
-                                e.target.style.background = 'rgba(168, 85, 247, 0.1)';
-                                e.target.style.borderColor = 'rgba(168, 85, 247, 0.3)';
-                              }}
-                              title="Copy to clipboard"
-                            >
-                              <img src="/copy.png" alt="Copy" style={{ width: '16px', height: '16px', objectFit: 'contain', marginRight: '0.3rem' }} />
-                              Copy
-                            </button>
-                            
-                            <button
-                              onClick={() => handleSend(`Create an image based on: ${m.text}`)}
-                              style={{
-                                background: 'rgba(59, 130, 246, 0.1)',
-                                border: '1px solid rgba(59, 130, 246, 0.3)',
-                                color: 'var(--text-secondary)',
-                                borderRadius: '6px',
-                                padding: '0.4rem 0.7rem',
-                                cursor: 'pointer',
-                                transition: 'all 0.2s ease',
-                                fontSize: '0.75rem'
-                              }}
-                              onMouseOver={(e) => {
-                                e.target.style.background = 'rgba(59, 130, 246, 0.2)';
-                                e.target.style.borderColor = 'rgb(59, 130, 246)';
-                              }}
-                              onMouseOut={(e) => {
-                                e.target.style.background = 'rgba(59, 130, 246, 0.1)';
-                                e.target.style.borderColor = 'rgba(59, 130, 246, 0.3)';
-                              }}
-                              title="Generate image based on this content"
-                            >
-                              <img src="/image.png" alt="Image" style={{ width: '16px', height: '16px', objectFit: 'contain', marginRight: '0.3rem' }} />
-                              Image
-                            </button>
-                          </div>
-                        )}
-                        
-                        {/* 3. YouTube Loading Animation */}
-                        {loadingYoutube[m.id || idx] && (
-                          <div style={{
-                            marginTop: '0.75rem',
-                            padding: '0.75rem',
-                            background: 'rgba(239, 68, 68, 0.05)',
-                            border: '1px solid rgba(239, 68, 68, 0.2)',
-                            borderRadius: '8px',
-                            display: 'flex',
-                            flexDirection: 'column',
-                            alignItems: 'center',
-                            gap: '0.5rem',
-                            minHeight: '60px',
-                            justifyContent: 'center'
-                          }}>
-                            <div style={{ fontSize: '0.85rem', fontWeight: '600', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                              <img src="/youtube.png" alt="YouTube" style={{ width: '18px', height: '18px', objectFit: 'contain' }} />
-                              Fetching YouTube Videos...
-                            </div>
-                            <div style={{
-                              display: 'flex',
-                              gap: '0.4rem',
-                              alignItems: 'center',
-                              marginTop: '0.5rem'
-                            }}>
-                              <div style={{
-                                width: '10px',
-                                height: '10px',
-                                borderRadius: '50%',
-                                background: 'rgba(239, 68, 68, 0.6)',
-                                animation: 'bounce 1.4s infinite'
-                              }} />
-                              <div style={{
-                                width: '10px',
-                                height: '10px',
-                                borderRadius: '50%',
-                                background: 'rgba(239, 68, 68, 0.6)',
-                                animation: 'bounce 1.4s infinite 0.2s'
-                              }} />
-                              <div style={{
-                                width: '10px',
-                                height: '10px',
-                                borderRadius: '50%',
-                                background: 'rgba(239, 68, 68, 0.6)',
-                                animation: 'bounce 1.4s infinite 0.4s'
-                              }} />
-                            </div>
-                          </div>
-                        )}
-                        
-                        {/* 3. YouTube Results - Show automatically or when expanded */}
-                        {(expandedMessage === (m.id || idx) || messageYoutubeResults[m.id || idx]?.length > 0) && !loadingYoutube[m.id || idx] && (!messageYoutubeResults[m.id || idx] || messageYoutubeResults[m.id || idx].length === 0) && expandedMessage === (m.id || idx) && (
-                          <div style={{
-                            marginTop: '0.75rem',
-                            padding: '0.75rem',
-                            background: 'rgba(239, 68, 68, 0.05)',
-                            border: '1px solid rgba(239, 68, 68, 0.2)',
-                            borderRadius: '8px',
-                            fontSize: '0.85rem',
-                            color: 'var(--text-secondary)',
-                            textAlign: 'center'
-                          }}>
-                            No YouTube videos found
-                          </div>
-                        )}
-                        
-                        {(expandedMessage === (m.id || idx) || messageYoutubeResults[m.id || idx]?.length > 0) && messageYoutubeResults[m.id || idx]?.length > 0 && !loadingYoutube[m.id || idx] && (
-                          <div style={{
-                            marginTop: '0.75rem',
-                            padding: '0.75rem',
-                            background: 'rgba(239, 68, 68, 0.05)',
-                            border: '1px solid rgba(239, 68, 68, 0.2)',
-                            borderRadius: '8px',
-                            display: 'flex',
-                            flexDirection: 'column',
-                            gap: '0.5rem'
-                          }}>
-                            <div style={{ fontSize: '0.85rem', fontWeight: '600', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                              <img src="/youtube.png" alt="YouTube" style={{ width: '18px', height: '18px', objectFit: 'contain' }} />
-                              Related YouTube Videos
-                            </div>
-                            {messageYoutubeResults[m.id || idx]?.slice(0, 3).map((video, vidIdx) => (
-                              <a
-                                key={vidIdx}
-                                href={video.url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                style={{
-                                  display: 'flex',
-                                  gap: '0.5rem',
-                                  padding: '0.5rem',
-                                  background: 'rgba(239, 68, 68, 0.1)',
-                                  borderRadius: '6px',
-                                  textDecoration: 'none',
-                                  transition: 'all 0.2s ease',
-                                  cursor: 'pointer'
-                                }}
-                                onMouseOver={(e) => {
-                                  e.currentTarget.style.background = 'rgba(239, 68, 68, 0.2)';
-                                  e.currentTarget.style.transform = 'translateX(4px)';
-                                }}
-                                onMouseOut={(e) => {
-                                  e.currentTarget.style.background = 'rgba(239, 68, 68, 0.1)';
-                                  e.currentTarget.style.transform = 'translateX(0)';
-                                }}
-                              >
-                                {video.thumbnail && (
-                                  <img
-                                    src={video.thumbnail}
-                                    alt={video.title}
-                                    style={{
-                                      width: '48px',
-                                      height: '27px',
-                                      borderRadius: '4px',
-                                      objectFit: 'cover',
-                                      flexShrink: 0
-                                    }}
-                                  />
-                                )}
-                                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', flex: 1 }}>
-                                  <span style={{ fontSize: '0.8rem', fontWeight: '500', color: 'var(--text-primary)' }}>
-                                    {video.title}
-                                  </span>
-                                  <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>
-                                    {video.channel}
-                                  </span>
-                                </div>
-                              </a>
-                            ))}
-                          </div>
-                        )}
-                        
-                        {/* 4. Suggestions Loading Animation */}
-                        {loadingSuggestions[m.id || idx] && (
-                          <div style={{
-                            marginTop: '0.75rem',
-                            padding: '0.75rem',
-                            background: 'rgba(34, 197, 94, 0.05)',
-                            border: '1px solid rgba(34, 197, 94, 0.2)',
-                            borderRadius: '8px',
-                            display: 'flex',
-                            flexDirection: 'column',
-                            alignItems: 'center',
-                            gap: '0.5rem',
-                            minHeight: '60px',
-                            justifyContent: 'center'
-                          }}>
-                            <div style={{ fontSize: '0.85rem', fontWeight: '600', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                              💡 Generating Suggestions...
-                            </div>
-                            <div style={{
-                              display: 'flex',
-                              gap: '0.4rem',
-                              alignItems: 'center',
-                              marginTop: '0.5rem'
-                            }}>
-                              <div style={{
-                                width: '10px',
-                                height: '10px',
-                                borderRadius: '50%',
-                                background: 'rgba(34, 197, 94, 0.6)',
-                                animation: 'bounce 1.4s infinite'
-                              }} />
-                              <div style={{
-                                width: '10px',
-                                height: '10px',
-                                borderRadius: '50%',
-                                background: 'rgba(34, 197, 94, 0.6)',
-                                animation: 'bounce 1.4s infinite 0.2s'
-                              }} />
-                              <div style={{
-                                width: '10px',
-                                height: '10px',
-                                borderRadius: '50%',
-                                background: 'rgba(34, 197, 94, 0.6)',
-                                animation: 'bounce 1.4s infinite 0.4s'
-                              }} />
-                            </div>
-                          </div>
-                        )}
-                        
-                        {/* 4. Suggestions - No results message */}
-                        {(expandedMessage === (m.id || idx) || messageSuggestions[m.id || idx]?.length > 0) && !loadingSuggestions[m.id || idx] && (!messageSuggestions[m.id || idx] || messageSuggestions[m.id || idx].length === 0) && expandedMessage === (m.id || idx) && (
-                          <div style={{
-                            marginTop: '0.75rem',
-                            padding: '0.75rem',
-                            background: 'rgba(34, 197, 94, 0.05)',
-                            border: '1px solid rgba(34, 197, 94, 0.2)',
-                            borderRadius: '8px',
-                            fontSize: '0.85rem',
-                            color: 'var(--text-secondary)',
-                            textAlign: 'center'
-                          }}>
-                            No suggestions available
-                          </div>
-                        )}
-                        
-                        {/* 4. Suggestions - Show automatically or when expanded */}
-                        {(expandedMessage === (m.id || idx) || messageSuggestions[m.id || idx]?.length > 0) && messageSuggestions[m.id || idx]?.length > 0 && !loadingSuggestions[m.id || idx] && (
-                          <div style={{
-                            marginTop: '0.75rem',
-                            padding: '0.75rem',
-                            background: 'rgba(34, 197, 94, 0.05)',
-                            border: '1px solid rgba(34, 197, 94, 0.2)',
-                            borderRadius: '8px',
-                            display: 'flex',
-                            flexDirection: 'column',
-                            gap: '0.5rem'
-                          }}>
-                            <div style={{ fontSize: '0.85rem', fontWeight: '600', color: 'var(--text-primary)' }}>
-                              💡 Suggested Questions
-                            </div>
-                            {messageSuggestions[m.id || idx]?.map((suggestion, sugIdx) => (
-                              <button
-                                key={sugIdx}
-                                onClick={() => handleSend(suggestion)}
-                                style={{
-                                  padding: '0.5rem 0.75rem',
-                                  background: 'rgba(34, 197, 94, 0.1)',
-                                  border: '1px solid rgba(34, 197, 94, 0.3)',
-                                  borderRadius: '6px',
-                                  color: 'var(--text-primary)',
-                                  cursor: 'pointer',
-                                  textAlign: 'left',
-                                  fontSize: '0.8rem',
-                                  transition: 'all 0.2s ease'
-                                }}
-                                onMouseOver={(e) => {
-                                  e.target.style.background = 'rgba(34, 197, 94, 0.2)';
-                                  e.target.style.borderColor = 'rgb(34, 197, 94)';
-                                }}
-                                onMouseOut={(e) => {
-                                  e.target.style.background = 'rgba(34, 197, 94, 0.1)';
-                                  e.target.style.borderColor = 'rgba(34, 197, 94, 0.3)';
-                                }}
-                              >
-                                → {suggestion}
-                              </button>
-                            ))}
-                          </div>
-                        )}
-                        
-                        {/* Close expanded view button */}
-                        {(expandedMessage === (m.id || idx) || messageYoutubeResults[m.id || idx]?.length > 0 || messageSuggestions[m.id || idx]?.length > 0) && (
-                          <button
-                            onClick={() => {
-                              setExpandedMessage(null);
-                              // Clear this message's results
-                              setMessageYoutubeResults(prev => {
-                                const newState = { ...prev };
-                                delete newState[m.id || idx];
-                                return newState;
-                              });
-                              setMessageSuggestions(prev => {
-                                const newState = { ...prev };
-                                delete newState[m.id || idx];
-                                return newState;
-                              });
-                            }}
-                            style={{
-                              padding: '0.3rem 0.6rem',
-                              fontSize: '0.75rem',
-                              background: 'transparent',
-                              border: '1px solid var(--border)',
-                              borderRadius: '4px',
-                              color: 'var(--text-secondary)',
-                              cursor: 'pointer',
-                              transition: 'all 0.2s ease',
-                              alignSelf: 'flex-start'
-                            }}
-                            onMouseOver={(e) => {
-                              e.target.style.background = 'rgba(77, 159, 255, 0.1)';
-                              e.target.style.borderColor = 'var(--primary)';
-                            }}
-                            onMouseOut={(e) => {
-                              e.target.style.background = 'transparent';
-                              e.target.style.borderColor = 'var(--border)';
-                            }}
-                          >
-                            ✕ Close
-                          </button>
-                        )}
-                      </div>
-                    )}
                   </div>
                   {m.sender === 'user' && (
                     <div style={{ fontSize: '1.5rem' }}>
@@ -3848,8 +2230,8 @@ const App = () => {
                 <div style={{
                   display: 'flex',
                   gap: '1rem',
-                  alignItems: 'flex-end',
-                  animation: 'slideUp 0.4s ease-out'
+                  alignItems: 'center',
+                  animation: 'fadeIn 0.3s ease'
                 }}>
                   <img 
                     src="/logo.png" 
@@ -3859,53 +2241,57 @@ const App = () => {
                       height: '32px', 
                       borderRadius: '6px',
                       objectFit: 'contain',
-                      flexShrink: 0
+                      flexShrink: 0,
+                      animation: 'pulse 2s infinite'
                     }} 
                   />
                   <div style={{
                     display: 'flex',
-                    alignItems: 'center',
-                    gap: '0.4rem',
+                    gap: '0.5rem',
                     padding: '0.75rem 1rem',
-                    background: 'rgba(77, 159, 255, 0.1)',
-                    border: '1px solid rgba(77, 159, 255, 0.2)',
+                    background: 'linear-gradient(135deg, rgba(102, 126, 234, 0.15), rgba(118, 75, 162, 0.15))',
                     borderRadius: '12px',
-                    minHeight: '44px'
+                    border: '1px solid rgba(102, 126, 234, 0.3)'
                   }}>
-                    <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', fontWeight: '500' }}>AccessAI is thinking</span>
-                    <span style={{ 
-                      display: 'inline-flex', 
-                      gap: '0.3rem',
-                      marginLeft: '0.3rem'
-                    }}>
-                      <span style={{ 
-                        width: '6px', 
-                        height: '6px', 
-                        borderRadius: '50%', 
-                        background: 'var(--accent)', 
-                        animation: 'typingBounce 1.4s infinite' 
-                      }} />
-                      <span style={{ 
-                        width: '6px', 
-                        height: '6px', 
-                        borderRadius: '50%', 
-                        background: 'var(--accent)', 
-                        animation: 'typingBounce 1.4s infinite 0.2s' 
-                      }} />
-                      <span style={{ 
-                        width: '6px', 
-                        height: '6px', 
-                        borderRadius: '50%', 
-                        background: 'var(--accent)', 
-                        animation: 'typingBounce 1.4s infinite 0.4s' 
-                      }} />
-                    </span>
+                    <div style={{ 
+                      width: '10px', 
+                      height: '10px', 
+                      borderRadius: '50%', 
+                      background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)', 
+                      animation: 'bounce 1.2s infinite',
+                      boxShadow: '0 0 10px rgba(102, 126, 234, 0.5)'
+                    }} />
+                    <div style={{ 
+                      width: '10px', 
+                      height: '10px', 
+                      borderRadius: '50%', 
+                      background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)', 
+                      animation: 'bounce 1.2s infinite', 
+                      animationDelay: '0.2s',
+                      boxShadow: '0 0 10px rgba(102, 126, 234, 0.5)'
+                    }} />
+                    <div style={{ 
+                      width: '10px', 
+                      height: '10px', 
+                      borderRadius: '50%', 
+                      background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)', 
+                      animation: 'bounce 1.2s infinite', 
+                      animationDelay: '0.4s',
+                      boxShadow: '0 0 10px rgba(102, 126, 234, 0.5)'
+                    }} />
                   </div>
+                  <span style={{
+                    fontSize: '0.85rem',
+                    color: 'rgba(255, 255, 255, 0.6)',
+                    fontStyle: 'italic',
+                    animation: 'fadeInOut 2s infinite'
+                  }}>
+                    Thinking...
+                  </span>
                 </div>
               )}
             </>
           )}
-          <div ref={chatEndRef} />
         </div>
 
         {/* Input Area - Inline Camera or Text Input */}
@@ -4016,7 +2402,7 @@ const App = () => {
                   value={inputText}
                   onChange={(e) => setInputText(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && (e.preventDefault(), handleSend())}
-                  placeholder="Type message... (Ctrl+Enter to send)"
+                  placeholder="Type message..."
                   style={{
                     flex: 1,
                     padding: '0.75rem 1rem',
@@ -4041,127 +2427,6 @@ const App = () => {
                   }}
                   rows="1"
                 />
-                
-                {/* Templates Button */}
-                <div style={{ position: 'relative' }}>
-                  <button
-                    onClick={() => setShowTemplates(!showTemplates)}
-                    style={{
-                      width: '40px',
-                      height: '40px',
-                      borderRadius: '8px',
-                      border: 'none',
-                      background: showTemplates ? 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)' : 'rgba(102, 126, 234, 0.1)',
-                      color: showTemplates ? 'white' : 'var(--text-secondary)',
-                      cursor: 'pointer',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      transition: 'all 0.3s ease',
-                      flexShrink: 0,
-                      fontSize: '1.2rem'
-                    }}
-                    title="Quick Templates (Ctrl+Shift+T)"
-                  >
-                    💡
-                  </button>
-                  
-                  {showTemplates && (
-                    <div style={{
-                      position: 'absolute',
-                      bottom: '50px',
-                      left: '0',
-                      background: 'var(--bg-secondary)',
-                      border: '1px solid var(--border)',
-                      borderRadius: '8px',
-                      padding: '0.5rem',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      gap: '0.3rem',
-                      minWidth: '180px',
-                      zIndex: 1000,
-                      boxShadow: '0 10px 25px rgba(0, 0, 0, 0.2)',
-                      maxHeight: '250px',
-                      overflowY: 'auto'
-                    }}>
-                      {chatTemplates.map(template => (
-                        <button
-                          key={template.id}
-                          onClick={() => insertTemplate(template)}
-                          style={{
-                            padding: '0.5rem 0.75rem',
-                            background: 'rgba(102, 126, 234, 0.1)',
-                            border: 'none',
-                            borderRadius: '4px',
-                            color: 'var(--text-primary)',
-                            cursor: 'pointer',
-                            textAlign: 'left',
-                            fontSize: '0.8rem',
-                            transition: 'all 0.2s ease'
-                          }}
-                          onMouseOver={(e) => {
-                            e.target.style.background = 'rgba(102, 126, 234, 0.2)';
-                            e.target.style.transform = 'translateX(4px)';
-                          }}
-                          onMouseOut={(e) => {
-                            e.target.style.background = 'rgba(102, 126, 234, 0.1)';
-                            e.target.style.transform = 'translateX(0)';
-                          }}
-                        >
-                          {template.label}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-                
-                {/* Search Button */}
-                <button
-                  onClick={() => setShowSearch(!showSearch)}
-                  style={{
-                    width: '40px',
-                    height: '40px',
-                    borderRadius: '8px',
-                    border: 'none',
-                    background: showSearch ? 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)' : 'rgba(59, 130, 246, 0.1)',
-                    color: showSearch ? 'white' : 'var(--text-secondary)',
-                    cursor: 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    transition: 'all 0.3s ease',
-                    flexShrink: 0,
-                    fontSize: '1.2rem'
-                  }}
-                  title="Search Messages (Ctrl+K)"
-                >
-                  🔍
-                </button>
-                
-                {/* Voice Command Button */}
-                <button
-                  onClick={toggleVoiceCommands}
-                  style={{
-                    width: '40px',
-                    height: '40px',
-                    borderRadius: '8px',
-                    border: 'none',
-                    background: isListeningCommands ? 'linear-gradient(135deg, #EF4444 0%, #DC2626 100%)' : 'rgba(239, 68, 68, 0.1)',
-                    color: isListeningCommands ? 'white' : 'var(--text-secondary)',
-                    cursor: 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    transition: 'all 0.3s ease',
-                    flexShrink: 0,
-                    fontSize: '1.2rem',
-                    animation: isListeningCommands ? 'pulse 1.5s infinite' : 'none'
-                  }}
-                  title="Voice Commands (say: send, new chat, search)"
-                >
-                  🎙️
-                </button>
-                
                 <button
                   onClick={toggleVoiceRecording}
                   style={{
@@ -4182,7 +2447,6 @@ const App = () => {
                 >
                   {isRecording ? '⏸️' : '🎤'}
                 </button>
-                
                 <button
                   onClick={() => setShowFileUploadPanel(!showFileUploadPanel)}
                   style={{
@@ -4307,6 +2571,7 @@ const App = () => {
                   pointerEvents: 'auto'
                 }}>
                   <GestureRecognition
+                    key={`gesture-${currentChatId}`}
                     onGestureDetected={(gesture) => {
                       setInputText((prev) => prev + gesture);
                     }}
@@ -4587,475 +2852,35 @@ const App = () => {
         </div>
       </div>
 
-      {/* Search Modal */}
-      {showSearch && (
-        <div style={{
-          position: 'fixed',
-          top: '80px',
-          left: '50%',
-          transform: 'translateX(-50%)',
-          background: 'var(--bg-secondary)',
-          border: '1px solid var(--border)',
-          borderRadius: '12px',
-          padding: '1rem',
-          minWidth: '400px',
-          maxWidth: '600px',
-          maxHeight: '400px',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '1rem',
-          zIndex: 9999,
-          boxShadow: '0 20px 50px rgba(0, 0, 0, 0.3)',
-          animation: 'slideUp 0.3s ease-out'
-        }}>
-          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => {
-                setSearchQuery(e.target.value);
-                searchMessages(e.target.value);
-              }}
-              placeholder="Search messages... (Escape to close)"
-              autoFocus
-              style={{
-                flex: 1,
-                padding: '0.75rem',
-                borderRadius: '8px',
-                border: '1px solid var(--border)',
-                background: 'rgba(77, 159, 255, 0.05)',
-                color: 'var(--text-primary)',
-                fontSize: '0.95rem'
-              }}
-              onKeyDown={(e) => {
-                if (e.key === 'Escape') setShowSearch(false);
-                if (e.key === 'Enter') searchMessages(searchQuery);
-              }}
-            />
-            <button
-              onClick={() => setShowSearch(false)}
-              style={{
-                padding: '0.75rem 1rem',
-                background: 'transparent',
-                border: '1px solid var(--border)',
-                borderRadius: '8px',
-                color: 'var(--text-secondary)',
-                cursor: 'pointer',
-                fontSize: '1rem'
-              }}
-            >
-              ✕
-            </button>
-          </div>
-          
-          {searchResults.length > 0 ? (
-            <div style={{
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '0.5rem',
-              maxHeight: '300px',
-              overflowY: 'auto'
-            }}>
-              <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-                Found {searchResults.length} result{searchResults.length !== 1 ? 's' : ''}
-              </div>
-              {searchResults.map((result, idx) => (
-                <div
-                  key={idx}
-                  onClick={() => {
-                    setShowSearch(false);
-                    // Highlight the result
-                    const element = document.getElementById(`msg-${idx}`);
-                    element?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                  }}
-                  style={{
-                    padding: '0.75rem',
-                    background: 'rgba(77, 159, 255, 0.1)',
-                    border: '1px solid rgba(77, 159, 255, 0.3)',
-                    borderRadius: '6px',
-                    cursor: 'pointer',
-                    transition: 'all 0.2s ease'
-                  }}
-                  onMouseOver={(e) => {
-                    e.currentTarget.style.background = 'rgba(77, 159, 255, 0.2)';
-                    e.currentTarget.style.transform = 'translateX(4px)';
-                  }}
-                  onMouseOut={(e) => {
-                    e.currentTarget.style.background = 'rgba(77, 159, 255, 0.1)';
-                    e.currentTarget.style.transform = 'translateX(0)';
-                  }}
-                >
-                  <div style={{ fontSize: '0.8rem', fontWeight: '500', marginBottom: '0.25rem' }}>
-                    {result.sender === 'user' ? 'You' : 'AccessAI'}
-                  </div>
-                  <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', wordBreak: 'break-word' }}>
-                    {result.text.substring(0, 100)}...
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : searchQuery ? (
-            <div style={{ textAlign: 'center', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
-              No messages found matching "{searchQuery}"
-            </div>
-          ) : (
-            <div style={{ textAlign: 'center', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
-              Type to search your conversation...
-            </div>
-          )}
-        </div>
-      )}
-      
-      {/* Voice Command Mode JARVIS Indicator */}
-      {isListeningCommands && (
-        <div style={{
-          position: 'fixed',
-          top: 0,
-          left: 0,
-          right: 0,
-          background: isVoiceCommandMode 
-            ? 'linear-gradient(90deg, rgba(79, 70, 229, 0.95) 0%, rgba(49, 46, 129, 0.95) 100%)' 
-            : 'linear-gradient(90deg, rgba(59, 130, 246, 0.95) 0%, rgba(30, 58, 138, 0.95) 100%)',
-          color: isVoiceCommandMode ? '#60A5FA' : '#93C5FD',
-          padding: '1rem 2rem',
-          zIndex: 10000,
-          borderBottom: isVoiceCommandMode ? '2px solid #60A5FA' : '2px solid #93C5FD',
-          animation: 'slideDown 0.3s ease-out',
-          backdropFilter: 'blur(10px)',
-          display: 'flex',
-          alignItems: 'center',
-          gap: '1.5rem',
-          justifyContent: 'space-between',
-          textShadow: '0 0 20px rgba(96, 165, 250, 0.5)',
-          fontWeight: '600'
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-            <span style={{ fontSize: '1.5rem', animation: 'pulse 1.5s infinite' }}>🤖</span>
-            <div>
-              <span>{isVoiceCommandMode ? 'JARVIS ACTIVE' : 'LISTENING FOR WAKE WORD'}</span>
-              <div style={{ opacity: 0.9, marginTop: '0.3rem', fontSize: '0.85rem' }}>
-                {isVoiceCommandMode 
-                  ? 'Say: "new chat", "search", "send", "delete chat", "settings", "exit"' 
-                  : 'Say "Hey Jarvis" to activate'}
-              </div>
-            </div>
-          </div>
-          
-          {/* Close Button (X) */}
-          <button
-            onClick={() => {
-              if (commandRecognitionRef.current) {
-                commandRecognitionRef.current.stop();
-              }
-              setIsListeningCommands(false);
-              setIsVoiceCommandMode(false);
-              setVoiceText('');
-            }}
-            style={{
-              background: 'rgba(255, 255, 255, 0.2)',
-              border: '1px solid rgba(255, 255, 255, 0.3)',
-              color: isVoiceCommandMode ? '#60A5FA' : '#93C5FD',
-              width: '32px',
-              height: '32px',
-              borderRadius: '6px',
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontSize: '1.2rem',
-              transition: 'all 0.2s ease',
-              fontWeight: 'bold'
-            }}
-            onMouseOver={(e) => {
-              e.target.style.background = 'rgba(255, 255, 255, 0.3)';
-              e.target.style.transform = 'scale(1.1)';
-            }}
-            onMouseOut={(e) => {
-              e.target.style.background = 'rgba(255, 255, 255, 0.2)';
-              e.target.style.transform = 'scale(1)';
-            }}
-            title="Close JARVIS"
-          >
-            ✕
-          </button>
-        </div>
-      )}
-      
-      {/* Voice Command Status Indicator - JARVIS Mode */}
-      {isListeningCommands && isVoiceCommandMode && (
-        <div style={{
-          position: 'fixed',
-          bottom: '20px',
-          right: '20px',
-          background: 'linear-gradient(135deg, #4F46E5 0%, #312E81 100%)',
-          color: '#60A5FA',
-          padding: '1.2rem 1.5rem',
-          borderRadius: '12px',
-          boxShadow: '0 0 20px rgba(79, 70, 229, 0.8), inset 0 0 10px rgba(96, 165, 250, 0.2)',
-          animation: 'pulse 1.5s infinite',
-          zIndex: 9998,
-          border: '1px solid rgba(96, 165, 250, 0.5)'
-        }}>
-          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-            <span style={{ fontSize: '1.4rem', animation: 'pulse 1.5s infinite' }}>🤖</span>
-            <div>
-              <div style={{ fontSize: '0.95rem', fontWeight: '700', color: '#BFDBFE' }}>LISTENING...</div>
-              <div style={{ fontSize: '0.85rem', opacity: 0.9, maxWidth: '250px', color: '#93C5FD', marginTop: '0.3rem' }}>
-                {voiceText || '🎙️ Awaiting command...'}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-      
-      {/* Voice Command Status Indicator - Regular Voice */}
-      {isListeningCommands && !isVoiceCommandMode && (
-        <div style={{
-          position: 'fixed',
-          bottom: '100px',
-          right: '20px',
-          background: 'linear-gradient(135deg, #EF4444 0%, #DC2626 100%)',
-          color: 'white',
-          padding: '1rem 1.5rem',
-          borderRadius: '8px',
-          boxShadow: '0 10px 30px rgba(239, 68, 68, 0.4)',
-          animation: 'pulse 1.5s infinite',
-          zIndex: 9998
-        }}>
-          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-            <span style={{ fontSize: '1.2rem' }}>🎤</span>
-            <div>
-              <div style={{ fontSize: '0.9rem', fontWeight: '600' }}>Listening...</div>
-              <div style={{ fontSize: '0.8rem', opacity: 0.9, maxWidth: '200px' }}>
-                {voiceText || 'Say: send, new chat, search, or anything else'}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Image Preview Modal */}
-      {imagePreviewModal.isOpen && (
-        <div style={{
-          position: 'fixed',
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          background: 'rgba(0, 0, 0, 0.85)',
-          display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'center',
-          zIndex: 10000,
-          backdropFilter: 'blur(4px)',
-          animation: 'fadeIn 0.3s ease'
-        }}>
-          <div style={{
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            gap: '1rem',
-            maxWidth: '90vw',
-            maxHeight: '90vh',
-            position: 'relative',
-            animation: 'fadeIn 0.3s ease'
-          }}>
-            {/* Close Button */}
-            <button
-              onClick={() => setImagePreviewModal({ isOpen: false, imageData: null, imageName: null })}
-              style={{
-                position: 'absolute',
-                top: '-50px',
-                right: '0px',
-                background: 'rgba(255, 255, 255, 0.2)',
-                border: '1px solid rgba(255, 255, 255, 0.3)',
-                color: 'white',
-                width: '40px',
-                height: '40px',
-                borderRadius: '50%',
-                cursor: 'pointer',
-                fontSize: '24px',
-                display: 'flex',
-                justifyContent: 'center',
-                alignItems: 'center',
-                transition: 'all 0.3s ease',
-                zIndex: 10001
-              }}
-              onMouseOver={(e) => {
-                e.currentTarget.style.background = 'rgba(255, 255, 255, 0.3)';
-                e.currentTarget.style.transform = 'scale(1.1)';
-              }}
-              onMouseOut={(e) => {
-                e.currentTarget.style.background = 'rgba(255, 255, 255, 0.2)';
-                e.currentTarget.style.transform = 'scale(1)';
-              }}
-              title="Close preview (ESC)"
-            >
-              ✕
-            </button>
-
-            {/* Image */}
-            <img
-              src={imagePreviewModal.imageData}
-              alt={imagePreviewModal.imageName}
-              style={{
-                maxWidth: '90vw',
-                maxHeight: '75vh',
-                borderRadius: '12px',
-                objectFit: 'contain',
-                boxShadow: '0 20px 60px rgba(0, 0, 0, 0.5)'
-              }}
-            />
-
-            {/* Controls */}
-            <div style={{
-              display: 'flex',
-              gap: '1rem',
-              justifyContent: 'center',
-              alignItems: 'center',
-              flexWrap: 'wrap',
-              marginTop: '1rem'
-            }}>
-              {/* Download Button */}
-              <button
-                onClick={() => downloadImage(imagePreviewModal.imageData, imagePreviewModal.imageName.replace('.png', ''))}
-                style={{
-                  padding: '0.75rem 1.5rem',
-                  borderRadius: '8px',
-                  border: 'none',
-                  background: 'linear-gradient(135deg, #0E78F5 0%, #7C3AED 100%)',
-                  color: 'white',
-                  cursor: 'pointer',
-                  fontSize: '0.95rem',
-                  fontWeight: '600',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '0.5rem',
-                  transition: 'all 0.3s ease',
-                  boxShadow: '0 8px 20px rgba(14, 120, 245, 0.3)'
-                }}
-                onMouseOver={(e) => {
-                  e.currentTarget.style.transform = 'translateY(-3px)';
-                  e.currentTarget.style.boxShadow = '0 12px 30px rgba(14, 120, 245, 0.4)';
-                }}
-                onMouseOut={(e) => {
-                  e.currentTarget.style.transform = 'translateY(0)';
-                  e.currentTarget.style.boxShadow = '0 8px 20px rgba(14, 120, 245, 0.3)';
-                }}
-              >
-                <img src="/download (2).png" alt="Download" style={{ width: '18px', height: '18px', objectFit: 'contain' }} />
-                Download Image
-              </button>
-
-              {/* Image Info */}
-              <div style={{
-                padding: '0.75rem 1.5rem',
-                background: 'rgba(255, 255, 255, 0.1)',
-                border: '1px solid rgba(255, 255, 255, 0.2)',
-                borderRadius: '8px',
-                color: 'rgba(255, 255, 255, 0.8)',
-                fontSize: '0.9rem',
-                textAlign: 'center'
-              }}>
-                {imagePreviewModal.imageName}
-              </div>
-            </div>
-
-            {/* Keyboard Hint */}
-            <div style={{
-              color: 'rgba(255, 255, 255, 0.5)',
-              fontSize: '0.85rem',
-              marginTop: '0.5rem'
-            }}>
-              Press ESC or click X to close
-            </div>
-          </div>
-        </div>
-      )}
 
       <style>{`
-        /* Core Animations */
-        @keyframes spin {
-          to { transform: rotate(360deg); }
-        }
-        
         @keyframes bounce {
-          0%, 100% { opacity: 0.3; }
-          50% { opacity: 1; }
-        }
-        
-        @keyframes pulse {
-          0%, 100% {
-            opacity: 1;
-            transform: scale(1);
+          0%, 100% { 
+            opacity: 0.3; 
+            transform: translateY(0);
           }
-          50% {
-            opacity: 0.8;
-            transform: scale(1.05);
+          50% { 
+            opacity: 1; 
+            transform: translateY(-8px);
           }
         }
-        
         @keyframes fadeIn {
           from { opacity: 0; transform: translateY(10px); }
           to { opacity: 1; transform: translateY(0); }
         }
-        
-        /* Enhanced Typing Indicator Animations */
-        @keyframes slideUp {
-          from {
-            opacity: 0;
-            transform: translateY(15px);
-          }
-          to {
-            opacity: 1;
-            transform: translateY(0);
-          }
-        }
-        
-        @keyframes typingBounce {
-          0% {
-            opacity: 0.4;
-            transform: translateY(0);
-          }
-          50% {
-            opacity: 1;
-            transform: translateY(-6px);
-          }
-          100% {
-            opacity: 0.4;
-            transform: translateY(0);
-          }
-        }
-        
-        /* Message Slide In Animation */
-        @keyframes slideInMessage {
-          from {
-            opacity: 0;
-            transform: translateX(-10px);
-          }
-          to {
-            opacity: 1;
-            transform: translateX(0);
-          }
-        }
-        
-        @keyframes bounce {
+        @keyframes pulse {
           0%, 100% {
-            transform: translateY(0);
+            transform: scale(1);
+            opacity: 1;
           }
           50% {
-            transform: translateY(-10px);
+            transform: scale(1.1);
+            opacity: 0.8;
           }
         }
-        
-        /* Smooth Chat Container */
-        .chat-messages {
-          animation: fadeIn 0.5s ease-out;
-        }
-        
-        /* Button Hover Effects */
-        button:hover {
-          transition: all 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+        @keyframes fadeInOut {
+          0%, 100% { opacity: 0.4; }
+          50% { opacity: 1; }
         }
       `}</style>
     </div>
