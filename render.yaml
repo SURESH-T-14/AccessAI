@@ -35,40 +35,34 @@ services:
         value: "80"
       - key: NODE_ENV
         value: production
-    repo: https://github.com/SURESH-T-14/AccessAI
+      - key: PORT
+        value: "3001"
 
   # Python Backend Service (Gesture Recognition)
   - type: web
     name: accessai-python
     env: python
     plan: free
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn --bind 0.0.0.0:5000 gesture_api_server_lite:app
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: python gesture_api_server_simple.py
     envVars:
       - key: FLASK_ENV
         value: production
       - key: PYTHONUNBUFFERED
         value: "1"
-    repo: https://github.com/SURESH-T-14/AccessAI
+      - key: PORT
+        value: "5000"
 
   # Frontend Service
-  - type: web
+  - type: static
     name: accessai-frontend
-    env: node
-    plan: free
     buildCommand: npm install && npm run build
-    startCommand: npm run preview
+    staticPublishPath: dist
     envVars:
       - key: VITE_API_BASE_URL
-        fromService:
-          name: accessai-backend
-          type: web
-          property: hostport
+        value: ""
       - key: VITE_FLASK_API_URL
-        fromService:
-          name: accessai-python
-          type: web
-          property: hostport
+        value: ""
       - key: VITE_FIREBASE_API_KEY
         value: ""
       - key: VITE_FIREBASE_AUTH_DOMAIN
@@ -87,4 +81,3 @@ services:
         value: ""
       - key: VITE_GOOGLE_CUSTOM_SEARCH_ENGINE_ID
         value: ""
-    repo: https://github.com/SURESH-T-14/AccessAI

@@ -1345,13 +1345,15 @@ if __name__ == '__main__':
         print(f"[INFO] Hand Landmarker model: hand_landmarker.task")
         print(f"[INFO] Gesture classes: {len(GESTURE_LABELS)} (1-9, A-Z)")
         print("=" * 70)
-        print("Starting Flask server on http://localhost:5000")
+        port = int(os.environ.get('PORT', 5000))
+        print(f"Starting Flask server on http://0.0.0.0:{port}")
         print("=" * 70)
         print("=" * 70)
         import sys
         sys.stdout.flush()
         sys.stderr.flush()
-        app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False, threaded=True)
+        port = int(os.environ.get('PORT', 5000))
+        app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False, threaded=True)
     except Exception as e:
         import traceback
         print(f"[FATAL] Flask crashed: {e}")
