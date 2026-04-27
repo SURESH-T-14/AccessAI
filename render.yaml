@@ -43,7 +43,7 @@ services:
     name: accessai-python
     env: python
     plan: free
-    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    buildCommand: pip install --no-cache-dir --upgrade pip && pip install --no-cache-dir -r requirements.txt
     startCommand: python gesture_api_server_simple.py
     envVars:
       - key: FLASK_ENV
