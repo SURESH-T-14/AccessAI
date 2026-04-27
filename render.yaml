@@ -54,10 +54,12 @@ services:
         value: "5000"
 
   # Frontend Service
-  - type: static
+  - type: web
     name: accessai-frontend
+    env: node
+    plan: free
     buildCommand: npm install && npm run build
-    staticPublishPath: dist
+    startCommand: npm run preview
     envVars:
       - key: VITE_API_BASE_URL
         value: ""
