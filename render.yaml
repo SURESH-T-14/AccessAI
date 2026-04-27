@@ -8,39 +8,31 @@ services:
     startCommand: node server.js
     envVars:
       - key: FIREBASE_DATABASE_URL
-        scope: build,runtime
+        value: ""
       - key: OPENAI_API_KEY
-        scope: runtime
-        isSecret: true
+        value: ""
       - key: VITE_GEMINI_API_KEY
-        scope: runtime
-        isSecret: true
+        value: ""
       - key: VITE_HUGGINGFACE_API_KEY
-        scope: runtime
-        isSecret: true
+        value: ""
       - key: VITE_GOOGLE_CUSTOM_SEARCH_ENGINE_ID
-        scope: runtime
+        value: ""
       - key: MONGODB_URI
-        scope: runtime
-        isSecret: true
+        value: ""
       - key: EMAIL_USER
-        scope: runtime
-        isSecret: true
+        value: ""
       - key: EMAIL_PASSWORD
-        scope: runtime
-        isSecret: true
+        value: ""
       - key: TWILIO_ACCOUNT_SID
-        scope: runtime
-        isSecret: true
+        value: ""
       - key: TWILIO_AUTH_TOKEN
-        scope: runtime
-        isSecret: true
+        value: ""
       - key: TWILIO_PHONE_NUMBER
-        scope: runtime
+        value: ""
       - key: ESP32_IP
-        scope: runtime
+        value: "http://192.168.29.103"
       - key: ESP32_PORT
-        scope: runtime
+        value: "80"
       - key: NODE_ENV
         value: production
     repo: https://github.com/SURESH-T-14/AccessAI
@@ -71,31 +63,28 @@ services:
         fromService:
           name: accessai-backend
           type: web
-          property: url
+          property: hostport
       - key: VITE_FLASK_API_URL
         fromService:
           name: accessai-python
           type: web
-          property: url
+          property: hostport
       - key: VITE_FIREBASE_API_KEY
-        scope: build,runtime
-        isSecret: true
+        value: ""
       - key: VITE_FIREBASE_AUTH_DOMAIN
-        scope: build,runtime
+        value: ""
       - key: VITE_FIREBASE_PROJECT_ID
-        scope: build,runtime
+        value: ""
       - key: VITE_FIREBASE_STORAGE_BUCKET
-        scope: build,runtime
+        value: ""
       - key: VITE_FIREBASE_MESSAGING_SENDER_ID
-        scope: build,runtime
+        value: ""
       - key: VITE_FIREBASE_APP_ID
-        scope: build,runtime
+        value: ""
       - key: VITE_GEMINI_API_KEY
-        scope: build,runtime
-        isSecret: true
+        value: ""
       - key: VITE_HUGGINGFACE_API_KEY
-        scope: build,runtime
-        isSecret: true
+        value: ""
       - key: VITE_GOOGLE_CUSTOM_SEARCH_ENGINE_ID
-        scope: build,runtime
+        value: ""
     repo: https://github.com/SURESH-T-14/AccessAI
