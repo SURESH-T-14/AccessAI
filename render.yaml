@@ -59,7 +59,7 @@ services:
     env: node
     plan: free
     buildCommand: npm install && npm run build
-    startCommand: npm run preview
+    startCommand: node server-frontend.js
     envVars:
       - key: VITE_API_BASE_URL
         value: ""
