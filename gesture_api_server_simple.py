@@ -16,13 +16,20 @@ from docx import Document
 from pptx import Presentation
 import os
 import tempfile
-import tensorflow as tf
 import pickle
 import threading
 import time
 from pathlib import Path
 import sys
 import os
+
+# Try importing TensorFlow (optional)
+try:
+    import tensorflow as tf
+    TF_AVAILABLE = True
+except ImportError:
+    TF_AVAILABLE = False
+    print("[!] TensorFlow not available (optional)")
 
 # Set UTF-8 encoding
 if sys.stdout.encoding != 'utf-8':
@@ -166,7 +173,8 @@ try:
             print(f"[!] Class mapping failed: {map_err}")
             GESTURE_LABELS = list("123456") + list("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
     else:
-        raise FileNotFoundError("gesture_classifier.pkl not found")
+        print(f"[!] gesture_classifier.pkl not found - gesture recognition disabled")
+        gesture_model = None
 except Exception as e:
     print(f"[!] Improved model not available: {e}")
     # Fall back to Indian gesture classifier
