@@ -1180,16 +1180,14 @@ const App = () => {
       
       // Analyze user message with NLP (in background, don't await)
       let nlpAnalysis = null;
-      try {
-        nlpAnalysis = await NLPService.quickAnalysis(cleanText);
-        // Clean NLP analysis to ensure Firestore compatibility
-        if (nlpAnalysis && typeof nlpAnalysis === 'object') {
-          nlpAnalysis = JSON.parse(JSON.stringify(nlpAnalysis));
-        }
-      } catch (err) {
-        console.warn('NLP analysis failed:', err);
-        nlpAnalysis = null;
-      }
+      // Fire and forget - don't block message processing on NLP
+      NLPService.quickAnalysis(cleanText)
+        .then(analysis => {
+          if (analysis && typeof analysis === 'object') {
+            nlpAnalysis = JSON.parse(JSON.stringify(analysis));
+          }
+        })
+        .catch(err => console.warn('NLP analysis failed:', err));
 
       // Save user message with NLP data and file attachment
       console.log("Saving user message to Firestore:", { currentChatId, cleanText });
