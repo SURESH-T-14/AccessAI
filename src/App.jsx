@@ -6,7 +6,7 @@ import {
 import { InferenceClient } from "@huggingface/inference";
 import { initializeApp } from "firebase/app";
 import { getAuth, signOut, onAuthStateChanged } from "firebase/auth";
-import { getFirestore, collection, addDoc, query, onSnapshot, serverTimestamp, deleteDoc, enableIndexedDbPersistence } from "firebase/firestore";
+import { getFirestore, collection, addDoc, query, onSnapshot, serverTimestamp, deleteDoc, initializeFirestore } from "firebase/firestore";
 import GestureRecognition from './components/GestureRecognition';
 import LoadingSpinner from './components/LoadingSpinner';
 import PerformanceMonitor from './components/PerformanceMonitor';
@@ -46,22 +46,15 @@ if (isFirebaseConfigured) {
   try {
     app = initializeApp(firebaseConfig);
     auth = getAuth(app);
-    db = getFirestore(app);
     
-    // Enable offline persistence for Firestore
-    enableIndexedDbPersistence(db)
-      .then(() => console.log("✅ Firestore offline persistence enabled"))
-      .catch((err) => {
-        if (err.code === 'failed-precondition') {
-          console.warn("⚠️ Multiple tabs using Firestore - persistence may not work in all tabs");
-        } else if (err.code === 'unimplemented') {
-          console.warn("⚠️ Browser does not support Firestore persistence");
-        } else {
-          console.warn("⚠️ Firestore persistence error:", err.message);
-        }
-      });
+    // Use modern cache settings instead of deprecated enableIndexedDbPersistence
+    db = initializeFirestore(app, {
+      cache: {
+        kind: 'persistent'
+      }
+    });
     
-    console.log("✅ Firebase initialized successfully");
+    console.log("✅ Firebase initialized successfully with persistent cache");
   } catch (error) {
     console.error("❌ Firebase initialization error:", error);
   }
