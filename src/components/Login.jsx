@@ -285,8 +285,12 @@ const Login = ({ auth, onLoginSuccess }) => {
     } catch (err) {
       console.error('📧 Email login error details:', err);
       console.error('Error code:', err.code);
+      console.error('Error message:', err.message);
       
-      if (err.code === 'auth/user-not-found') {
+      // Check for network/403 errors from Firebase secure token endpoint
+      if (err.message && err.message.includes('403') || err.message && err.message.includes('Unable to establish connection')) {
+        setError('🔐 FIREBASE AUTHENTICATION ERROR\n\n❌ Cannot connect to Firebase authentication service\n\n⚠️ THIS COULD MEAN:\n1. Firebase API key is restricted\n2. Firebase billing not enabled\n3. Authentication service is down\n4. Network connection issue\n\n✅ SOLUTIONS:\n• Verify Firebase billing is ENABLED\n• Check Firebase API key restrictions\n• Verify Email/Password auth is ENABLED\n• Try again in 2-3 minutes\n• Try Google Sign In instead\n\n🆘 If problem persists, contact support');
+      } else if (err.code === 'auth/user-not-found') {
         setError('❌ Email not found.\n\n✅ This email is not registered.\n\n👉 NEXT STEPS:\n1. Click the "CREATE ACCOUNT" button below\n2. Enter your name, email, and password\n3. Verify your email\n4. Then you can sign in');
       } else if (err.code === 'auth/wrong-password') {
         setError('❌ Wrong password.\n\n✅ SOLUTIONS:\n✓ Check password spelling carefully\n✓ Check if CAPS LOCK is ON (turn it OFF)\n✓ Passwords are case-sensitive (A ≠ a)\n✓ Try again\n\n💡 Forgot password? Try signing in with Google instead');

@@ -44,6 +44,15 @@ const isFirebaseConfigured = firebaseConfig.apiKey && Object.keys(firebaseConfig
 
 if (isFirebaseConfigured) {
   try {
+    // Log Firebase config for debugging (redact sensitive parts)
+    console.log("🔧 Firebase Config (REDACTED):", {
+      apiKey: `${firebaseConfig.apiKey.slice(0, 10)}...${firebaseConfig.apiKey.slice(-5)}`,
+      authDomain: firebaseConfig.authDomain,
+      projectId: firebaseConfig.projectId,
+      storageBucket: firebaseConfig.storageBucket,
+      messagingSenderId: firebaseConfig.messagingSenderId
+    });
+    
     app = initializeApp(firebaseConfig);
     auth = getAuth(app);
     
@@ -55,11 +64,21 @@ if (isFirebaseConfigured) {
     });
     
     console.log("✅ Firebase initialized successfully with persistent cache");
+    console.log("🔐 Auth instance ready for:", firebaseConfig.authDomain);
   } catch (error) {
     console.error("❌ Firebase initialization error:", error);
+    console.error("❌ Firebase config was:", firebaseConfig);
   }
 } else {
   console.warn("⚠️ Firebase not configured - check .env file");
+  console.warn("⚠️ Config values:", {
+    apiKey: !!firebaseConfig.apiKey,
+    authDomain: !!firebaseConfig.authDomain,
+    projectId: !!firebaseConfig.projectId,
+    storageBucket: !!firebaseConfig.storageBucket,
+    messagingSenderId: !!firebaseConfig.messagingSenderId,
+    appId: !!firebaseConfig.appId
+  });
 }
 
 /* --- AI API CONFIG (OpenAI + Hugging Face Fallback) --- */
