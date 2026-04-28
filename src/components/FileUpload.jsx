@@ -11,7 +11,7 @@ const FileUpload = ({ onAnalysisComplete, onError }) => {
 
   const ALLOWED_TYPES = ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/vnd.openxmlformats-officedocument.presentationml.presentation', 'image/png', 'image/jpeg', 'image/gif', 'image/bmp'];
   const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
-  const API_BASE = 'http://localhost:5000/api';
+  const API_BASE = `${import.meta.env.VITE_BACKEND_API_URL || 'http://localhost:5000'}/api`;
 
   const validateFile = (file) => {
     if (!ALLOWED_TYPES.includes(file.type)) {
