@@ -91,8 +91,17 @@ export class EmergencyContactService {
       }
       return [];
     } catch (error) {
-      // Handle permission errors gracefully
-      if (error.code === 'permission-denied') {
+      // Handle offline/connectivity errors gracefully
+      if (error.message && error.message.includes('offline')) {
+        console.log('📡 Firestore temporarily offline. Loading contacts from local storage...');
+        const localContacts = this.getFromLocalStorage(userId);
+        if (localContacts.length > 0) {
+          console.log(`✅ Loaded ${localContacts.length} contact(s) from local storage`);
+        } else {
+          console.log('ℹ️ No offline contacts found. Please restore internet connection.');
+        }
+        return localContacts;
+      } else if (error.code === 'permission-denied') {
         console.warn('⚠️ Firebase permissions denied. Loading contacts from local storage...');
         const localContacts = this.getFromLocalStorage(userId);
         if (localContacts.length > 0) {
