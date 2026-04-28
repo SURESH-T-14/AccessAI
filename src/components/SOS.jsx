@@ -93,7 +93,8 @@ const SOS = ({ user, emergencyContacts, onEmergencyTriggered, db }) => {
       // Trigger ESP32 buzzer for 2 minutes (120,000 ms)
       console.log('🔔 Triggering ESP32 buzzer for 2 minutes...');
       try {
-        const buzzerResponse = await fetch('http://localhost:3001/api/trigger-esp32-alert', {
+        const BACKEND_URL = import.meta.env.VITE_BACKEND_API_URL || 'http://localhost:3001';
+        const buzzerResponse = await fetch(`${BACKEND_URL}/api/trigger-esp32-alert`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -121,7 +122,8 @@ const SOS = ({ user, emergencyContacts, onEmergencyTriggered, db }) => {
           if (contact.phone) {
             console.log(`📱 Sending SMS to ${contact.name}: ${contact.phone}`);
             try {
-              const smsResponse = await fetch('http://localhost:3001/api/send-emergency-sms', {
+                const BACKEND_URL = import.meta.env.VITE_BACKEND_API_URL || 'http://localhost:3001';
+                const smsResponse = await fetch(`${BACKEND_URL}/api/send-emergency-sms`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -147,7 +149,8 @@ const SOS = ({ user, emergencyContacts, onEmergencyTriggered, db }) => {
           if (contact.email) {
             console.log(`📧 Sending Email to ${contact.name}: ${contact.email}`);
             try {
-              const emailResponse = await fetch('http://localhost:3001/api/send-emergency-email', {
+                const BACKEND_URL = import.meta.env.VITE_BACKEND_API_URL || 'http://localhost:3001';
+                const emailResponse = await fetch(`${BACKEND_URL}/api/send-emergency-email`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({

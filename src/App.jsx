@@ -136,7 +136,8 @@ const GeneratedImageDisplay = ({ imageRef, userId, chatId }) => {
       const fetchImage = async () => {
         try {
           setIsLoading(true);
-          const response = await fetch(`http://localhost:3001/api/get-images/${userId}/${chatId}`);
+          const BACKEND_URL = import.meta.env.VITE_BACKEND_API_URL || 'http://localhost:3001';
+          const response = await fetch(`${BACKEND_URL}/api/get-images/${userId}/${chatId}`);
           
           if (!response.ok) {
             throw new Error('Failed to fetch image from database');
@@ -1062,7 +1063,8 @@ const App = () => {
           
           // Store in MongoDB instead of Firestore to avoid size limits
           try {
-            const storeResponse = await fetch('http://localhost:3001/api/store-image', {
+            const BACKEND_URL = import.meta.env.VITE_BACKEND_API_URL || 'http://localhost:3001';
+            const storeResponse = await fetch(`${BACKEND_URL}/api/store-image`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
