@@ -3,7 +3,8 @@
  * Handles sentiment analysis, intent detection, and text processing
  */
 
-const API_BASE = `${import.meta.env.VITE_BACKEND_API_URL || 'http://localhost:5000'}/api`;
+// NLP endpoints are on the Python backend
+const API_BASE = `${import.meta.env.VITE_FLASK_API_URL || 'http://localhost:5000'}/api`;
 
 export class NLPService {
   /**
