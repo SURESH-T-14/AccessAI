@@ -23,7 +23,7 @@ const GestureRecognition = ({ onGestureDetected }) => {
   const FRAME_WIDTH = 480; // Reduced width for faster processing
   const FRAME_HEIGHT = 360; // Reduced height for faster processing
 
-  const API_BASE = `${import.meta.env.VITE_BACKEND_API_URL || 'http://localhost:5000'}/api`;
+  const API_BASE = `${import.meta.env.VITE_FLASK_API_URL || 'http://localhost:5000'}/api`;
 
   // Start detection
   const handleStart = async () => {
