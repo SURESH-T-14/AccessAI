@@ -181,7 +181,8 @@ export class EmergencyContactService {
   static async sendSMS(phoneNumber, message) {
     try {
       // This should call your backend API
-      const response = await fetch('/api/send-emergency-sms', {
+      const BACKEND_URL = import.meta.env.VITE_BACKEND_API_URL || 'http://localhost:3001';
+      const response = await fetch(`${BACKEND_URL}/api/send-emergency-sms`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -207,7 +208,8 @@ export class EmergencyContactService {
   static async sendEmail(email, userName, message) {
     try {
       // This should call your backend API
-      const response = await fetch('/api/send-emergency-email', {
+      const BACKEND_URL = import.meta.env.VITE_BACKEND_API_URL || 'http://localhost:3001';
+      const response = await fetch(`${BACKEND_URL}/api/send-emergency-email`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

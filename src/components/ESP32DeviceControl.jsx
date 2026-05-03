@@ -21,7 +21,8 @@ const ESP32DeviceControl = () => {
 
   const checkDeviceStatus = async () => {
     try {
-      const response = await fetch('/api/esp32-status/main');
+      const BACKEND_URL = import.meta.env.VITE_BACKEND_API_URL || 'http://localhost:3001';
+      const response = await fetch(`${BACKEND_URL}/api/esp32-status/main`);
       if (response.ok) {
         setDeviceStatus('online');
         setError(null);
@@ -40,7 +41,8 @@ const ESP32DeviceControl = () => {
     setSuccess(null);
 
     try {
-      const response = await fetch('/api/trigger-esp32-alert', {
+      const BACKEND_URL = import.meta.env.VITE_BACKEND_API_URL || 'http://localhost:3001';
+      const response = await fetch(`${BACKEND_URL}/api/trigger-esp32-alert`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'

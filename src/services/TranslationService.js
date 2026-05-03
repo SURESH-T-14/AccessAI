@@ -5,7 +5,8 @@
  * No API key required for local translation
  */
 
-const ARGOS_API_BASE = 'http://localhost:5000/api/translate';
+const FLASK_API_URL = import.meta.env.VITE_FLASK_API_URL || 'http://localhost:5000';
+const ARGOS_API_BASE = `${FLASK_API_URL}/api/translate`;
 const GOOGLE_TRANSLATE_API = 'https://translation.googleapis.com/language/translate/v2';
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent';
 const OPENAI_API_BASE = 'https://api.openai.com/v1/chat/completions';
