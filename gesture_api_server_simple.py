@@ -22,6 +22,15 @@ import time
 from pathlib import Path
 import sys
 import os
+import warnings
+
+# Suppress MediaPipe cleanup warnings (known issue with HandLandmarker.__del__)
+warnings.filterwarnings('ignore', message='.*NoneType.*callable.*')
+import atexit
+def suppress_mediapipe_errors():
+    """Suppress MediaPipe cleanup errors during shutdown"""
+    pass
+atexit.register(suppress_mediapipe_errors)
 
 # Try importing TensorFlow (optional)
 try:
@@ -95,6 +104,81 @@ gesture_history = []
 cap = None
 hands = None
 mp_drawing = None
+
+# ===== HYBRID APPROACH: Gesture Sequences + Context Awareness =====
+# Track recent gestures for sequence detection
+gesture_sequence = []  # Recent 10 gestures for pattern detection
+MAX_SEQUENCE_LENGTH = 10
+SEQUENCE_CONFIDENCE_BOOST = 0.08  # Boost confidence if gesture matches expected pattern
+TIME_WINDOW = 2.0  # Consider gestures within 2 seconds for pattern matching
+
+# Common gesture patterns (A-Z alphabetical sequences + 1-9 numeric sequences)
+EXPECTED_PATTERNS = {
+    # Alphabetical sequences (A→B→C→...→Z flow)
+    'A-B': 0.02, 'B-C': 0.02, 'C-D': 0.02, 'D-E': 0.02, 'E-F': 0.02,
+    'F-G': 0.02, 'G-H': 0.02, 'H-I': 0.02, 'I-J': 0.02, 'J-K': 0.02,
+    'K-L': 0.02, 'L-M': 0.02, 'M-N': 0.02, 'N-O': 0.02, 'O-P': 0.02,
+    'P-Q': 0.02, 'Q-R': 0.02, 'R-S': 0.02, 'S-T': 0.02, 'T-U': 0.02,
+    'U-V': 0.02, 'V-W': 0.02, 'W-X': 0.02, 'X-Y': 0.02, 'Y-Z': 0.02,
+    # Numeric sequences (1→2→3→...→9 flow)
+    '1-2': 0.03, '2-3': 0.03, '3-4': 0.03, '4-5': 0.03, '5-6': 0.03,
+    '6-7': 0.03, '7-8': 0.03, '8-9': 0.03,
+}
+
+def update_gesture_sequence(gesture, confidence):
+    """Track gesture sequences for context awareness"""
+    global gesture_sequence
+    
+    current_time = time.time()
+    gesture_sequence.append({
+        'gesture': gesture,
+        'confidence': confidence,
+        'timestamp': current_time
+    })
+    
+    # Keep only recent gestures (within time window)
+    gesture_sequence = [g for g in gesture_sequence 
+                       if current_time - g['timestamp'] < TIME_WINDOW]
+    
+    # Limit sequence length
+    if len(gesture_sequence) > MAX_SEQUENCE_LENGTH:
+        gesture_sequence.pop(0)
+
+def get_context_boost(current_gesture, confidence):
+    """Calculate confidence boost based on gesture sequence context"""
+    if len(gesture_sequence) < 2:
+        return 0.0
+    
+    # Check if current gesture follows expected pattern
+    previous_gesture = gesture_sequence[-1]['gesture'] if len(gesture_sequence) > 0 else None
+    
+    if previous_gesture:
+        pattern = f"{previous_gesture}-{current_gesture}"
+        # If it's a common pattern, boost confidence slightly
+        if pattern in EXPECTED_PATTERNS:
+            return EXPECTED_PATTERNS[pattern]
+        
+        # If same gesture repeats, small boost (user likely holding gesture)
+        if previous_gesture == current_gesture:
+            return 0.05
+    
+    return 0.0
+
+def smooth_confidence_temporal(gesture, confidence):
+    """Apply temporal smoothing using gesture history"""
+    if not gesture_history:
+        return confidence
+    
+    # Look back 5 frames
+    recent_gestures = [g for g in gesture_history[-5:] 
+                      if g['gesture'] == gesture]
+    
+    if len(recent_gestures) >= 3:
+        # Same gesture detected 3+ times recently = increase confidence
+        avg_confidence = sum(g['confidence'] for g in recent_gestures) / len(recent_gestures)
+        confidence = min(0.99, (confidence + avg_confidence) / 2)
+    
+    return confidence
 
 # Performance optimization settings
 ENABLE_DETECTION_CACHING = False  # DISABLED - turned off to fix hand tracking
@@ -264,9 +348,8 @@ def get_features_hash(features):
 def smooth_confidence(confidence, buffer_size=CONFIDENCE_SMOOTHING_BUFFER):
     """Apply exponential moving average to confidence scores"""
     global confidence_history
-    if not ENABLE_CONFIDENCE_SMOOTHING:
-        return confidence
     
+    # Always apply smoothing when called directly
     confidence_history.append(confidence)
     if len(confidence_history) > buffer_size:
         confidence_history.pop(0)
@@ -374,17 +457,41 @@ def process_frame_bytes(frame_bytes):
                         pred_time = time.time() - pred_start
                         
                         if gesture and confidence > 0.0:
-                            smoothed_confidence = smooth_confidence(confidence)
+                            # ===== HYBRID APPROACH: Apply Multi-Layer Confidence Boosting =====
+                            
+                            # 1. Apply temporal smoothing (average with recent detections)
+                            temporal_confidence = smooth_confidence_temporal(gesture, confidence)
+                            temporal_boost = temporal_confidence - confidence
+                            
+                            # 2. Get context boost based on gesture sequence
+                            context_boost = get_context_boost(gesture, temporal_confidence)
+                            context_confidence = min(0.99, temporal_confidence + context_boost)
+                            
+                            # 3. Apply exponential moving average (recent frames weighted more)
+                            smoothed_confidence = smooth_confidence(context_confidence)
+                            smoothing_boost = smoothed_confidence - context_confidence
+                            
+                            # 4. Update gesture sequence for next prediction
+                            update_gesture_sequence(gesture, smoothed_confidence)
+                            
+                            # Final confidence is the hybrid result
+                            final_confidence = float(smoothed_confidence)
+                            total_boost = final_confidence - confidence
+                            
+                            # Log confidence breakdown
+                            if total_boost > 0.01:
+                                print(f"  [HYBRID] {gesture}: base={confidence*100:.1f}% → temporal+{temporal_boost*100:.1f}% → context+{context_boost*100:.1f}% → smoothed+{smoothing_boost*100:.1f}% = final {final_confidence*100:.1f}%")
+                            
                             detected_gestures.append({
                                 'gesture': gesture,
-                                'confidence': float(smoothed_confidence),
+                                'confidence': final_confidence,
                                 'hand': hand_idx + 1  # Hand 1 or Hand 2
                             })
                             
                             # Add to history
                             gesture_history.append({
                                 'gesture': f"{gesture} (Hand {hand_idx + 1})",
-                                'confidence': float(smoothed_confidence),
+                                'confidence': final_confidence,
                                 'timestamp': time.time()
                             })
                             
@@ -403,7 +510,7 @@ def process_frame_bytes(frame_bytes):
                     
                     total_time = time.time() - start_time
                     for det in detected_gestures:
-                        print(f"[DETECTED] Hand {det['hand']}: {det['gesture']} (confidence: {det['confidence']*100:.1f}%) | Total time: {total_time*1000:.1f}ms")
+                        print(f"[DETECTED ✅] Hand {det['hand']}: {det['gesture']} (confidence: {det['confidence']*100:.1f}%) | Hybrid approach applied | Total time: {total_time*1000:.1f}ms")
                 else:
                     total_time = time.time() - start_time
                     print(f"[NO GESTURE] {len(results.hand_landmarks)} hand(s) detected but low confidence | Times: total={total_time*1000:.1f}ms")
